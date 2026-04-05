@@ -1,0 +1,33 @@
+{
+  "name": "@serpdelta/emdash-plugin",
+  "version": "0.1.0",
+  "description": "Google Search Console tracking for EmDash. Connect GSC, sync movement data, surface ranking changes alongside your content.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sandbox": "./src/sandbox-entry.ts"
+  },
+  "keywords": [
+    "emdash",
+    "emdash-plugin",
+    "google-search-console",
+    "gsc",
+    "seo",
+    "rankings",
+    "serp",
+    "analytics"
+  ],
+  "author": "Ben <ben@serpdelta.com>",
+  "license": "MIT",
+  "homepage": "https://serpdelta.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/serpdelta/emdash-plugin"
+  },
+  "peerDependencies": {
+    "emdash": "^0.1.0"
+  },
+  "devDependencies": {
+    "tsdown": "^0.21.7"
+  }
+}
