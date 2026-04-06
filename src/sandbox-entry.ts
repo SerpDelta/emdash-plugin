@@ -372,8 +372,8 @@ async function renderAdminPage(
           {
             type: "actions",
             elements: [
-              { type: "button", text: "Retry", action_id: "retry_properties", style: "primary" },
-              { type: "button", text: "Disconnect", action_id: "disconnect", style: "danger" },
+              { type: "button", label: "Retry", action_id: "retry_properties", style: "primary" },
+              { type: "button", label: "Disconnect", action_id: "disconnect", style: "danger" },
             ],
           },
         ],
@@ -402,13 +402,23 @@ async function handleAction(
 ): Promise<Record<string, unknown>> {
   const actionId = interaction.action_id;
 
-  // Start OAuth — redirect to connect route
+  // Start OAuth — show link to connect route (Block Kit can't redirect)
   if (actionId === "start_oauth") {
     const origin = new URL(routeCtx.request.url).origin;
     const connectRoute = `${origin}/_emdash/api/plugins/serpdelta/connect`;
 
     return {
-      redirect: connectRoute,
+      blocks: [
+        { type: "header", text: "SerpDelta" },
+        {
+          type: "section",
+          text: "Opening Google authorization...",
+        },
+        {
+          type: "section",
+          text: `If not redirected automatically, open this link:\n${connectRoute}`,
+        },
+      ],
     };
   }
 

@@ -69,9 +69,9 @@ export function dashboard(
   blocks.push({
     type: "actions",
     elements: [
-      { type: "button", text: "Sync Now", action_id: "trigger_sync", style: "primary" },
-      { type: "button", text: "Change Property", action_id: "change_property" },
-      { type: "button", text: "Disconnect", action_id: "disconnect", style: "danger", confirm: { title: "Disconnect?", text: "This will remove your GSC connection and stored data.", confirm: "Disconnect", deny: "Cancel" } },
+      { type: "button", label: "Sync Now", action_id: "trigger_sync", style: "primary" },
+      { type: "button", label: "Change Property", action_id: "change_property" },
+      { type: "button", label: "Disconnect", action_id: "disconnect", style: "danger", confirm: { title: "Disconnect?", text: "This will remove your GSC connection and stored data.", confirm: "Disconnect", deny: "Cancel" } },
     ],
   });
 
