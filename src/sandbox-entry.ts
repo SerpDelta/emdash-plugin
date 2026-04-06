@@ -19,7 +19,6 @@ import {
 } from "./lib/movements.js";
 import {
   connectScreen,
-  credentialsSaved,
   propertySelector,
   dashboard,
   topMoversWidget,
@@ -52,6 +51,12 @@ async function getSiteUrl(ctx: PluginContext): Promise<string | null> {
 }
 
 async function getCredentials(ctx: PluginContext): Promise<{ clientId: string; clientSecret: string } | null> {
+  // Try plugin options first (set in astro.config.mjs)
+  const opts = (ctx as Record<string, unknown>).options as { clientId?: string; clientSecret?: string } | undefined;
+  if (opts?.clientId && opts?.clientSecret) {
+    return { clientId: opts.clientId, clientSecret: opts.clientSecret };
+  }
+  // Fallback to KV (legacy or manual setup)
   const clientId = await ctx.kv.get<string>("clientId");
   const clientSecret = await ctx.kv.get<string>("clientSecret");
   if (!clientId || !clientSecret) return null;
@@ -358,15 +363,43 @@ async function renderAdminPage(
   const connected = await ctx.kv.get<boolean>("connected");
   const creds = await getCredentials(ctx);
 
-  // Step 1: No credentials — show setup form
+  // Step 1: No credentials — show setup form (only if not provided via options)
   if (!creds) {
     return connectScreen("");
   }
 
-  // Step 2: Credentials but not connected — show connect button
+  // Step 2: Credentials exist but not connected — show connect button
   if (!connected) {
     const callbackUrl = getCallbackUrl(routeCtx.request.url, "serpdelta");
-    return credentialsSaved(callbackUrl);
+    const state = randomState();
+    await ctx.kv.set("oauth_state", state, { ttl: 600 });
+    const authUrl = buildAuthUrl(creds.clientId, callbackUrl, state);
+
+    return {
+      blocks: [
+        { type: "header", text: "SerpDelta" },
+        {
+          type: "section",
+          text: "Connect your Google Search Console to track ranking changes, top movers, and movement data for your pages and queries.",
+        },
+        { type: "divider" },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: "Connect Google Account",
+              action_id: "start_oauth",
+              style: "primary",
+            },
+          ],
+        },
+        {
+          type: "context",
+          text: `Callback URL: ${callbackUrl}`,
+        },
+      ],
+    };
   }
 
   // Step 3: Connected but no property selected — show property picker
@@ -423,20 +456,6 @@ async function handleAction(
   },
 ): Promise<Record<string, unknown>> {
   const actionId = interaction.action_id;
-
-  // Save Google credentials
-  if (actionId === "save_credentials" && interaction.values) {
-    const clientId = interaction.values.client_id;
-    const clientSecret = interaction.values.client_secret;
-    if (!clientId || !clientSecret) {
-      return { blocks: [], toast: { message: "Both fields are required", type: "error" } };
-    }
-    await ctx.kv.set("clientId", clientId);
-    await ctx.kv.set("clientSecret", clientSecret);
-
-    const callbackUrl = getCallbackUrl(routeCtx.request.url, "serpdelta");
-    return credentialsSaved(callbackUrl);
-  }
 
   // Start OAuth
   if (actionId === "start_oauth") {

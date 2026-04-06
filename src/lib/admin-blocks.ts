@@ -9,65 +9,29 @@ type BlockResponse = { blocks: Block[]; toast?: { message: string; type: "succes
 
 // --- Connect Screen ---
 
-export function connectScreen(authUrl: string): BlockResponse {
-  return {
-    blocks: [
-      { type: "header", text: "SerpDelta" },
-      {
-        type: "section",
-        text: "Track what matters. Ignore the noise.\n\nConnect your Google Search Console to see ranking changes, top movers, and movement data for your pages and queries.",
-      },
-      { type: "divider" },
-      {
-        type: "form",
-        block_id: "settings",
-        fields: [
-          {
-            type: "secret_input",
-            action_id: "client_id",
-            label: "Google OAuth Client ID",
-          },
-          {
-            type: "secret_input",
-            action_id: "client_secret",
-            label: "Google OAuth Client Secret",
-          },
-        ],
-        submit: { label: "Save & Connect", action_id: "save_credentials" },
-      },
-      {
-        type: "context",
-        text: "Create credentials at console.cloud.google.com. Enable the Search Console API and add the callback URL shown after saving.",
-      },
-    ],
-  };
-}
-
-export function credentialsSaved(callbackUrl: string): BlockResponse {
+export function connectScreen(_authUrl: string): BlockResponse {
   return {
     blocks: [
       { type: "header", text: "SerpDelta" },
       {
         type: "banner",
-        style: "info",
-        text: `Add this as an authorized redirect URI in Google Cloud Console:\n\n\`${callbackUrl}\``,
+        style: "error",
+        text: "Google OAuth credentials not configured. Add them to your astro.config.mjs:",
+      },
+      {
+        type: "code",
+        language: "typescript",
+        text: `serpdeltaPlugin({\n  clientId: "YOUR_GOOGLE_CLIENT_ID",\n  clientSecret: "YOUR_GOOGLE_CLIENT_SECRET",\n})`,
       },
       { type: "divider" },
       {
-        type: "actions",
-        elements: [
-          {
-            type: "button",
-            text: "Connect Google Account",
-            action_id: "start_oauth",
-            style: "primary",
-          },
-        ],
+        type: "context",
+        text: "Create credentials at console.cloud.google.com. Enable the Search Console API. Redeploy after adding credentials.",
       },
     ],
-    toast: { message: "Credentials saved", type: "success" },
   };
 }
+
 
 // --- Property Selection ---
 
