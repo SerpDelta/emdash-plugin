@@ -1,92 +1,72 @@
 /**
- * Google OAuth 2.0 helpers for EmDash plugin context.
- * Uses ctx.http.fetch() — no Node.js APIs.
+ * OAuth via serpdelta.com proxy.
+ *
+ * The plugin never touches the Google client secret.
+ * serpdelta.com handles code exchange and token refresh.
  */
 
-const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
-const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-
-const SCOPES = [
-  "openid",
-  "email",
-  "profile",
-  "https://www.googleapis.com/auth/webmasters.readonly",
-];
+const SERPDELTA_API = "https://serpdelta.com/api/plugin";
 
 export interface TokenPayload {
   accessToken: string;
   refreshToken: string;
   expiresAt: number; // Unix ms
-  email?: string;
 }
 
-interface TokenResponse {
-  access_token: string;
-  refresh_token?: string;
-  expires_in: number;
-  token_type: string;
-  id_token?: string;
-}
-
-export function buildAuthUrl(
-  clientId: string,
-  redirectUri: string,
+/**
+ * Build the URL that starts the OAuth flow.
+ * Redirects to serpdelta.com, which redirects to Google,
+ * which redirects back to serpdelta.com, which redirects
+ * back to the plugin callback with tokens.
+ */
+export function buildConnectUrl(
+  pluginCallbackUrl: string,
   state: string,
 ): string {
   const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: "code",
-    scope: SCOPES.join(" "),
-    access_type: "offline",
-    prompt: "consent",
+    callback_url: pluginCallbackUrl,
     state,
   });
-  return `${GOOGLE_AUTH_URL}?${params.toString()}`;
+  return `${SERPDELTA_API}/connect?${params.toString()}`;
 }
 
-export async function exchangeCode(
-  code: string,
-  clientId: string,
-  clientSecret: string,
-  redirectUri: string,
-  fetchFn: typeof fetch,
-): Promise<TokenResponse> {
-  const res = await fetchFn(GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: redirectUri,
-      grant_type: "authorization_code",
-    }).toString(),
-  });
+/**
+ * Parse tokens from the callback query string.
+ * serpdelta.com redirects back with access_token, refresh_token, expires_in, state.
+ */
+export function parseCallbackTokens(
+  url: URL,
+): { tokens: TokenPayload; state: string } | null {
+  const accessToken = url.searchParams.get("access_token");
+  const refreshToken = url.searchParams.get("refresh_token");
+  const expiresIn = url.searchParams.get("expires_in");
+  const state = url.searchParams.get("state");
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Token exchange failed: ${res.status} ${text}`);
+  if (!accessToken || !refreshToken || !expiresIn || !state) {
+    return null;
   }
 
-  return (await res.json()) as TokenResponse;
+  return {
+    tokens: {
+      accessToken,
+      refreshToken,
+      expiresAt: Date.now() + parseInt(expiresIn, 10) * 1000,
+    },
+    state,
+  };
 }
 
+/**
+ * Refresh an access token via serpdelta.com proxy.
+ */
 export async function refreshAccessToken(
   refreshToken: string,
-  clientId: string,
-  clientSecret: string,
   fetchFn: typeof fetch,
 ): Promise<{ accessToken: string; expiresAt: number }> {
-  const res = await fetchFn(GOOGLE_TOKEN_URL, {
+  const res = await fetchFn(`${SERPDELTA_API}/refresh`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret,
-      grant_type: "refresh_token",
-    }).toString(),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
   });
 
   if (!res.ok) {
@@ -94,33 +74,27 @@ export async function refreshAccessToken(
     throw new Error(`Token refresh failed: ${res.status} ${text}`);
   }
 
-  const data = (await res.json()) as TokenResponse;
+  const data = (await res.json()) as { access_token: string; expires_in: number };
   return {
     accessToken: data.access_token,
     expiresAt: Date.now() + data.expires_in * 1000,
   };
 }
 
+/**
+ * Get a valid access token, refreshing if needed.
+ */
 export async function getValidToken(
   tokens: TokenPayload,
-  clientId: string,
-  clientSecret: string,
   fetchFn: typeof fetch,
   saveFn: (updated: TokenPayload) => Promise<void>,
 ): Promise<string> {
-  // 5-minute buffer before expiry
   const bufferMs = 5 * 60 * 1000;
   if (tokens.expiresAt - bufferMs > Date.now()) {
     return tokens.accessToken;
   }
 
-  const refreshed = await refreshAccessToken(
-    tokens.refreshToken,
-    clientId,
-    clientSecret,
-    fetchFn,
-  );
-
+  const refreshed = await refreshAccessToken(tokens.refreshToken, fetchFn);
   const updated: TokenPayload = {
     ...tokens,
     accessToken: refreshed.accessToken,

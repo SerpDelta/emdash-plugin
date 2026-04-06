@@ -1,15 +1,14 @@
 import { definePlugin } from "emdash";
 import type { PluginContext } from "emdash";
 import {
-  buildAuthUrl,
-  exchangeCode,
+  buildConnectUrl,
+  parseCallbackTokens,
   getValidToken,
   type TokenPayload,
 } from "./lib/oauth.js";
 import {
   getProperties,
   syncDateRange,
-  type DailyRow,
 } from "./lib/gsc-client.js";
 import {
   detectMovements,
@@ -18,7 +17,6 @@ import {
   type Movement,
 } from "./lib/movements.js";
 import {
-  connectScreen,
   propertySelector,
   dashboard,
   topMoversWidget,
@@ -48,13 +46,6 @@ async function saveTokens(ctx: PluginContext, tokens: TokenPayload): Promise<voi
 
 async function getSiteUrl(ctx: PluginContext): Promise<string | null> {
   return ctx.kv.get<string>("siteUrl");
-}
-
-async function getCredentials(ctx: PluginContext): Promise<{ clientId: string; clientSecret: string } | null> {
-  const clientId = await ctx.kv.get<string>("settings:clientId");
-  const clientSecret = await ctx.kv.get<string>("settings:clientSecret");
-  if (!clientId || !clientSecret) return null;
-  return { clientId, clientSecret };
 }
 
 async function loadSnapshots(ctx: PluginContext, siteUrl: string): Promise<Snapshot[]> {
@@ -93,21 +84,6 @@ function getCallbackUrl(requestUrl: string, pluginId: string): string {
 // --- Plugin Definition ---
 
 export default definePlugin({
-  admin: {
-    settingsSchema: {
-      clientId: {
-        type: "secret",
-        label: "Google OAuth Client ID",
-        description: "From Google Cloud Console — APIs & Services > Credentials",
-      },
-      clientSecret: {
-        type: "secret",
-        label: "Google OAuth Client Secret",
-        description: "From Google Cloud Console — APIs & Services > Credentials",
-      },
-    },
-  },
-
   hooks: {
     "plugin:install": {
       handler: async (_event: unknown, ctx: PluginContext) => {
@@ -117,82 +93,42 @@ export default definePlugin({
   },
 
   routes: {
-    // --- OAuth ---
-
-    connect: {
-      handler: async (routeCtx: { request: Request }, ctx: PluginContext) => {
-        const creds = await getCredentials(ctx);
-        if (!creds) {
-          return { error: "No credentials configured. Set them in the admin page." };
-        }
-
-        const callbackUrl = getCallbackUrl(routeCtx.request.url, "serpdelta");
-        const state = randomState();
-        await ctx.kv.set("oauth_state", state, { ttl: 600 });
-
-        const authUrl = buildAuthUrl(creds.clientId, callbackUrl, state);
-        return { authUrl };
-      },
-    },
+    // --- OAuth (via serpdelta.com proxy) ---
 
     callback: {
       public: true,
       handler: async (routeCtx: { request: Request }, ctx: PluginContext) => {
         const url = new URL(routeCtx.request.url);
-        const code = url.searchParams.get("code");
-        const state = url.searchParams.get("state");
-        const error = url.searchParams.get("error");
 
+        // Check for errors
+        const error = url.searchParams.get("error");
         if (error) {
           return new Response(`OAuth error: ${error}`, { status: 400 });
         }
-        if (!code || !state) {
-          return new Response("Missing code or state", { status: 400 });
+
+        // Parse tokens from serpdelta.com redirect
+        const result = parseCallbackTokens(url);
+        if (!result) {
+          return new Response("Missing tokens in callback", { status: 400 });
         }
 
+        // Validate state
         const savedState = await ctx.kv.get<string>("oauth_state");
-        if (state !== savedState) {
+        if (result.state !== savedState) {
           return new Response("Invalid state — possible CSRF", { status: 403 });
         }
         await ctx.kv.delete("oauth_state");
 
-        const creds = await getCredentials(ctx);
-        if (!creds) {
-          return new Response("No credentials configured", { status: 500 });
-        }
-
-        const callbackUrl = getCallbackUrl(routeCtx.request.url, "serpdelta");
-        const tokenData = await exchangeCode(
-          code,
-          creds.clientId,
-          creds.clientSecret,
-          callbackUrl,
-          ctx.http.fetch.bind(ctx.http),
-        );
-
-        if (!tokenData.refresh_token) {
-          return new Response(
-            "No refresh token received. Revoke app access at myaccount.google.com/permissions and try again.",
-            { status: 400 },
-          );
-        }
-
-        const tokens: TokenPayload = {
-          accessToken: tokenData.access_token,
-          refreshToken: tokenData.refresh_token,
-          expiresAt: Date.now() + tokenData.expires_in * 1000,
-        };
-
-        await saveTokens(ctx, tokens);
+        // Store tokens
+        await saveTokens(ctx, result.tokens);
         await ctx.kv.set("connected", true);
-
-        ctx.log.info("Google account connected");
+        ctx.log.info("Google account connected via serpdelta.com proxy");
 
         // Redirect to admin page
         const adminUrl = new URL(routeCtx.request.url);
         return new Response(null, {
           status: 302,
-          headers: { Location: `${adminUrl.origin}/_emdash/admin/serpdelta` },
+          headers: { Location: `${adminUrl.origin}/_emdash/admin/plugins/serpdelta/serpdelta` },
         });
       },
     },
@@ -202,11 +138,10 @@ export default definePlugin({
     properties: {
       handler: async (_routeCtx: unknown, ctx: PluginContext) => {
         const tokens = await getTokens(ctx);
-        const creds = await getCredentials(ctx);
-        if (!tokens || !creds) return { error: "Not connected" };
+        if (!tokens) return { error: "Not connected" };
 
         const accessToken = await getValidToken(
-          tokens, creds.clientId, creds.clientSecret,
+          tokens,
           ctx.http.fetch.bind(ctx.http),
           (updated) => saveTokens(ctx, updated),
         );
@@ -219,19 +154,17 @@ export default definePlugin({
     sync: {
       handler: async (_routeCtx: unknown, ctx: PluginContext) => {
         const tokens = await getTokens(ctx);
-        const creds = await getCredentials(ctx);
         const siteUrl = await getSiteUrl(ctx);
-        if (!tokens || !creds || !siteUrl) {
+        if (!tokens || !siteUrl) {
           return { error: "Not connected or no property selected" };
         }
 
         const accessToken = await getValidToken(
-          tokens, creds.clientId, creds.clientSecret,
+          tokens,
           ctx.http.fetch.bind(ctx.http),
           (updated) => saveTokens(ctx, updated),
         );
 
-        // Sync last 17 days (need 2x 7-day windows + 3-day lookback)
         const startDate = dateStr(20);
         const endDate = dateStr(3);
 
@@ -242,7 +175,6 @@ export default definePlugin({
           ctx.http.fetch.bind(ctx.http), 500,
         );
 
-        // Store snapshots
         let stored = 0;
         for (const row of pages) {
           const id = `${siteUrl}|page|${row.key}|${row.date}`;
@@ -265,12 +197,10 @@ export default definePlugin({
           stored++;
         }
 
-        // Detect movements
         const allSnapshots = await loadSnapshots(ctx, siteUrl);
         const tracked = await loadTrackedItems(ctx, siteUrl);
         const movements = detectMovements(allSnapshots, siteUrl, tracked);
 
-        // Store movements (replace existing for this date)
         const today = dateStr(3);
         for (const m of movements) {
           const id = `${siteUrl}|${m.kind}|${m.value}|${today}`;
@@ -316,7 +246,6 @@ export default definePlugin({
           return { success: true, id };
         }
 
-        // GET — list
         const items = await ctx.storage.tracked_items.query({
           where: { siteUrl },
           limit: 200,
@@ -334,7 +263,6 @@ export default definePlugin({
           page?: string;
           action_id?: string;
           values?: Record<string, string>;
-          block_id?: string;
         };
 
         // --- Widget ---
@@ -370,26 +298,20 @@ async function renderAdminPage(
   ctx: PluginContext,
 ): Promise<Record<string, unknown>> {
   const connected = await ctx.kv.get<boolean>("connected");
-  const creds = await getCredentials(ctx);
 
-  // Step 1: No credentials — show setup form (only if not provided via options)
-  if (!creds) {
-    return connectScreen();
-  }
-
-  // Step 2: Credentials exist but not connected — show connect button
+  // Step 1: Not connected — show Connect button
   if (!connected) {
     const callbackUrl = getCallbackUrl(routeCtx.request.url, "serpdelta");
     const state = randomState();
     await ctx.kv.set("oauth_state", state, { ttl: 600 });
-    const authUrl = buildAuthUrl(creds.clientId, callbackUrl, state);
+    const connectUrl = buildConnectUrl(callbackUrl, state);
 
     return {
       blocks: [
         { type: "header", text: "SerpDelta" },
         {
           type: "section",
-          text: "Connect your Google Search Console to track ranking changes, top movers, and movement data for your pages and queries.",
+          text: "Track what matters. Ignore the noise.\n\nConnect your Google Search Console to see ranking changes, top movers, and movement data for your pages and queries.",
         },
         { type: "divider" },
         {
@@ -403,15 +325,11 @@ async function renderAdminPage(
             },
           ],
         },
-        {
-          type: "context",
-          text: `Callback URL: ${callbackUrl}`,
-        },
       ],
     };
   }
 
-  // Step 3: Connected but no property selected — show property picker
+  // Step 2: Connected but no property selected — show property picker
   const siteUrl = await getSiteUrl(ctx);
   if (!siteUrl) {
     try {
@@ -419,7 +337,7 @@ async function renderAdminPage(
       if (!tokens) throw new Error("No tokens");
 
       const accessToken = await getValidToken(
-        tokens, creds.clientId, creds.clientSecret,
+        tokens,
         ctx.http.fetch.bind(ctx.http),
         (updated) => saveTokens(ctx, updated),
       );
@@ -430,7 +348,10 @@ async function renderAdminPage(
       return {
         blocks: [
           { type: "header", text: "SerpDelta" },
-          { type: "banner", style: "error", text: `Failed to load properties: ${err}` },
+          {
+            type: "section",
+            text: `Failed to load properties: ${err}`,
+          },
           {
             type: "actions",
             elements: [
@@ -443,7 +364,7 @@ async function renderAdminPage(
     }
   }
 
-  // Step 4: Full dashboard
+  // Step 3: Full dashboard
   const lastSync = await ctx.kv.get<string>("lastSync");
   const snapshots = await loadSnapshots(ctx, siteUrl);
   const movements = await loadMovements(ctx, siteUrl);
@@ -455,36 +376,30 @@ async function renderAdminPage(
 // --- Action Handlers ---
 
 async function handleAction(
-  routeCtx: { request: Request; input: Record<string, unknown> },
+  routeCtx: { request: Request },
   ctx: PluginContext,
   interaction: {
     action_id?: string;
     values?: Record<string, string>;
-    block_id?: string;
-    type: string;
   },
 ): Promise<Record<string, unknown>> {
   const actionId = interaction.action_id;
 
-  // Start OAuth
+  // Start OAuth via serpdelta.com
   if (actionId === "start_oauth") {
-    const creds = await getCredentials(ctx);
-    if (!creds) {
-      return { blocks: [], toast: { message: "No credentials", type: "error" } };
-    }
     const callbackUrl = getCallbackUrl(routeCtx.request.url, "serpdelta");
     const state = randomState();
     await ctx.kv.set("oauth_state", state, { ttl: 600 });
-    const authUrl = buildAuthUrl(creds.clientId, callbackUrl, state);
+    const connectUrl = buildConnectUrl(callbackUrl, state);
 
     return {
       blocks: [
         { type: "header", text: "SerpDelta" },
         {
           type: "section",
-          text: `[Click here to connect your Google account](${authUrl})`,
+          text: `[Click here to connect your Google account](${connectUrl})`,
         },
-        { type: "context", text: "You'll be redirected to Google to grant Search Console access." },
+        { type: "context", text: "You'll be redirected to Google to grant Search Console read access." },
       ],
     };
   }
@@ -507,14 +422,13 @@ async function handleAction(
   if (actionId === "trigger_sync") {
     try {
       const tokens = await getTokens(ctx);
-      const creds = await getCredentials(ctx);
       const siteUrl = await getSiteUrl(ctx);
-      if (!tokens || !creds || !siteUrl) {
+      if (!tokens || !siteUrl) {
         return { blocks: [], toast: { message: "Not fully configured", type: "error" } };
       }
 
       const accessToken = await getValidToken(
-        tokens, creds.clientId, creds.clientSecret,
+        tokens,
         ctx.http.fetch.bind(ctx.http),
         (updated) => saveTokens(ctx, updated),
       );
@@ -528,11 +442,20 @@ async function handleAction(
       );
 
       let stored = 0;
-      for (const row of [...pages, ...queries]) {
-        const type = pages.includes(row) ? "page" : "query";
-        const id = `${siteUrl}|${type}|${row.key}|${row.date}`;
+      for (const row of pages) {
+        const id = `${siteUrl}|page|${row.key}|${row.date}`;
         await ctx.storage.snapshots.put(id, {
-          siteUrl, date: row.date, type,
+          siteUrl, date: row.date, type: "page",
+          key: row.key, clicks: row.clicks,
+          impressions: row.impressions, ctr: row.ctr,
+          position: row.position,
+        } satisfies Snapshot);
+        stored++;
+      }
+      for (const row of queries) {
+        const id = `${siteUrl}|query|${row.key}|${row.date}`;
+        await ctx.storage.snapshots.put(id, {
+          siteUrl, date: row.date, type: "query",
           key: row.key, clicks: row.clicks,
           impressions: row.impressions, ctr: row.ctr,
           position: row.position,
@@ -551,15 +474,11 @@ async function handleAction(
       }
 
       await ctx.kv.set("lastSync", new Date().toISOString().slice(0, 16).replace("T", " "));
-
       const alerts = movements.filter((m) => m.score >= ALERT_THRESHOLD).length;
 
       return {
         ...(await renderAdminPage(routeCtx, ctx)),
-        toast: {
-          message: `Synced ${stored} rows, ${movements.length} movements, ${alerts} alerts`,
-          type: "success",
-        },
+        toast: { message: `Synced ${stored} rows, ${movements.length} movements, ${alerts} alerts`, type: "success" },
       };
     } catch (err) {
       ctx.log.error(`Sync failed: ${err}`);
@@ -582,8 +501,6 @@ async function handleAction(
     await ctx.kv.delete("tokens");
     await ctx.kv.delete("siteUrl");
     await ctx.kv.delete("lastSync");
-    await ctx.kv.delete("settings:clientId");
-    await ctx.kv.delete("settings:clientSecret");
     ctx.log.info("Disconnected");
     return {
       ...(await renderAdminPage(routeCtx, ctx)),

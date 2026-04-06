@@ -8,8 +8,7 @@ export function serpdeltaPlugin(): PluginDescriptor {
     entrypoint: "@serpdelta/emdash-plugin/sandbox",
     capabilities: ["network:fetch"],
     allowedHosts: [
-      "accounts.google.com",
-      "oauth2.googleapis.com",
+      "serpdelta.com",
       "www.googleapis.com",
       "searchconsole.googleapis.com",
     ],

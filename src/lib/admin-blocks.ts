@@ -7,26 +7,6 @@ import type { Movement, Snapshot } from "./movements.js";
 type Block = Record<string, unknown>;
 type BlockResponse = { blocks: Block[]; toast?: { message: string; type: "success" | "error" | "info" } };
 
-// --- Connect Screen ---
-
-export function connectScreen(): BlockResponse {
-  return {
-    blocks: [
-      { type: "header", text: "SerpDelta" },
-      {
-        type: "section",
-        text: "Google OAuth credentials are not configured yet.",
-      },
-      { type: "divider" },
-      {
-        type: "section",
-        text: "Go to the SerpDelta plugin settings page and enter your Google OAuth Client ID and Client Secret. You can create credentials at console.cloud.google.com — enable the Search Console API.",
-      },
-    ],
-  };
-}
-
-
 // --- Property Selection ---
 
 export function propertySelector(properties: Array<{ siteUrl: string; permissionLevel: string }>): BlockResponse {
