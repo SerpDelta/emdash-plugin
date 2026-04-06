@@ -95,6 +95,21 @@ export default definePlugin({
   routes: {
     // --- OAuth (via serpdelta.com proxy) ---
 
+    connect: {
+      public: true,
+      handler: async (routeCtx: { request: Request }, ctx: PluginContext) => {
+        const callbackUrl = getCallbackUrl(routeCtx.request.url, "serpdelta");
+        const state = randomState();
+        await ctx.kv.set("oauth_state", state, { ttl: 600 });
+        const connectUrl = buildConnectUrl(callbackUrl, state);
+
+        return new Response(null, {
+          status: 302,
+          headers: { Location: connectUrl },
+        });
+      },
+    },
+
     callback: {
       public: true,
       handler: async (routeCtx: { request: Request }, ctx: PluginContext) => {
@@ -299,12 +314,10 @@ async function renderAdminPage(
 ): Promise<Record<string, unknown>> {
   const connected = await ctx.kv.get<boolean>("connected");
 
-  // Step 1: Not connected — show Connect button
+  // Step 1: Not connected — show Connect link
   if (!connected) {
-    const callbackUrl = getCallbackUrl(routeCtx.request.url, "serpdelta");
-    const state = randomState();
-    await ctx.kv.set("oauth_state", state, { ttl: 600 });
-    const connectUrl = buildConnectUrl(callbackUrl, state);
+    const origin = new URL(routeCtx.request.url).origin;
+    const connectRoute = `${origin}/_emdash/api/plugins/serpdelta/connect`;
 
     return {
       blocks: [
@@ -324,6 +337,10 @@ async function renderAdminPage(
               style: "primary",
             },
           ],
+        },
+        {
+          type: "context",
+          text: `Or open directly: ${connectRoute}`,
         },
       ],
     };
@@ -385,22 +402,13 @@ async function handleAction(
 ): Promise<Record<string, unknown>> {
   const actionId = interaction.action_id;
 
-  // Start OAuth via serpdelta.com
+  // Start OAuth — redirect to connect route
   if (actionId === "start_oauth") {
-    const callbackUrl = getCallbackUrl(routeCtx.request.url, "serpdelta");
-    const state = randomState();
-    await ctx.kv.set("oauth_state", state, { ttl: 600 });
-    const connectUrl = buildConnectUrl(callbackUrl, state);
+    const origin = new URL(routeCtx.request.url).origin;
+    const connectRoute = `${origin}/_emdash/api/plugins/serpdelta/connect`;
 
     return {
-      blocks: [
-        { type: "header", text: "SerpDelta" },
-        {
-          type: "section",
-          text: `[Click here to connect your Google account](${connectUrl})`,
-        },
-        { type: "context", text: "You'll be redirected to Google to grant Search Console read access." },
-      ],
+      redirect: connectRoute,
     };
   }
 
