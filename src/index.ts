@@ -1,17 +1,11 @@
 import type { PluginDescriptor } from "emdash";
 
-export interface SerpDeltaOptions {
-  clientId: string;
-  clientSecret: string;
-}
-
-export function serpdeltaPlugin(options: SerpDeltaOptions): PluginDescriptor {
+export function serpdeltaPlugin(): PluginDescriptor {
   return {
     id: "serpdelta",
     version: "0.1.0",
     format: "standard",
     entrypoint: "@serpdelta/emdash-plugin/sandbox",
-    options,
     capabilities: ["network:fetch"],
     allowedHosts: [
       "accounts.google.com",

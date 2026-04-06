@@ -9,24 +9,18 @@ type BlockResponse = { blocks: Block[]; toast?: { message: string; type: "succes
 
 // --- Connect Screen ---
 
-export function connectScreen(_authUrl: string): BlockResponse {
+export function connectScreen(): BlockResponse {
   return {
     blocks: [
       { type: "header", text: "SerpDelta" },
       {
-        type: "banner",
-        style: "error",
-        text: "Google OAuth credentials not configured. Add them to your astro.config.mjs:",
-      },
-      {
-        type: "code",
-        language: "typescript",
-        text: `serpdeltaPlugin({\n  clientId: "YOUR_GOOGLE_CLIENT_ID",\n  clientSecret: "YOUR_GOOGLE_CLIENT_SECRET",\n})`,
+        type: "section",
+        text: "Google OAuth credentials are not configured yet.",
       },
       { type: "divider" },
       {
-        type: "context",
-        text: "Create credentials at console.cloud.google.com. Enable the Search Console API. Redeploy after adding credentials.",
+        type: "section",
+        text: "Go to the SerpDelta plugin settings page and enter your Google OAuth Client ID and Client Secret. You can create credentials at console.cloud.google.com — enable the Search Console API.",
       },
     ],
   };

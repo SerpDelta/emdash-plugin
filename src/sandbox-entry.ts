@@ -51,14 +51,8 @@ async function getSiteUrl(ctx: PluginContext): Promise<string | null> {
 }
 
 async function getCredentials(ctx: PluginContext): Promise<{ clientId: string; clientSecret: string } | null> {
-  // Try plugin options first (set in astro.config.mjs)
-  const opts = (ctx as Record<string, unknown>).options as { clientId?: string; clientSecret?: string } | undefined;
-  if (opts?.clientId && opts?.clientSecret) {
-    return { clientId: opts.clientId, clientSecret: opts.clientSecret };
-  }
-  // Fallback to KV (legacy or manual setup)
-  const clientId = await ctx.kv.get<string>("clientId");
-  const clientSecret = await ctx.kv.get<string>("clientSecret");
+  const clientId = await ctx.kv.get<string>("settings:clientId");
+  const clientSecret = await ctx.kv.get<string>("settings:clientSecret");
   if (!clientId || !clientSecret) return null;
   return { clientId, clientSecret };
 }
@@ -99,6 +93,21 @@ function getCallbackUrl(requestUrl: string, pluginId: string): string {
 // --- Plugin Definition ---
 
 export default definePlugin({
+  admin: {
+    settingsSchema: {
+      clientId: {
+        type: "secret",
+        label: "Google OAuth Client ID",
+        description: "From Google Cloud Console — APIs & Services > Credentials",
+      },
+      clientSecret: {
+        type: "secret",
+        label: "Google OAuth Client Secret",
+        description: "From Google Cloud Console — APIs & Services > Credentials",
+      },
+    },
+  },
+
   hooks: {
     "plugin:install": {
       handler: async (_event: unknown, ctx: PluginContext) => {
@@ -365,7 +374,7 @@ async function renderAdminPage(
 
   // Step 1: No credentials — show setup form (only if not provided via options)
   if (!creds) {
-    return connectScreen("");
+    return connectScreen();
   }
 
   // Step 2: Credentials exist but not connected — show connect button
@@ -573,8 +582,8 @@ async function handleAction(
     await ctx.kv.delete("tokens");
     await ctx.kv.delete("siteUrl");
     await ctx.kv.delete("lastSync");
-    await ctx.kv.delete("clientId");
-    await ctx.kv.delete("clientSecret");
+    await ctx.kv.delete("settings:clientId");
+    await ctx.kv.delete("settings:clientSecret");
     ctx.log.info("Disconnected");
     return {
       ...(await renderAdminPage(routeCtx, ctx)),
