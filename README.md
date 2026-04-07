@@ -1,45 +1,36 @@
 # SerpDelta for EmDash
 
-Google Search Console tracking plugin for [EmDash CMS](https://github.com/emdash-cms/emdash).
-
-Connect GSC once, sync movement data, and surface ranking changes alongside your content — right inside EmDash.
+Display your SerpDelta data inside [EmDash CMS](https://github.com/emdash-cms/emdash) — top movers, page rankings, keyword performance, and recent alerts, right in the admin.
 
 ## Status
 
-v0.1.0 MVP — functional plugin with OAuth, sync, movement detection, and admin dashboard.
+v0.2.0 — functional MVP. The plugin is a thin client to the [SerpDelta](https://serpdelta.com) API. All Google Search Console syncing, movement detection, and scoring happen on serpdelta.com — the plugin just fetches and displays the data.
 
-## Features
+## How It Works
 
-- Google OAuth 2.0 connection (offline access, token refresh)
-- Property selector from available GSC sites
-- Manual sync — pulls last 17 days of page + query data
-- Movement detection engine with 4-component scoring (statistical, position, traffic, tracked)
-- Admin dashboard with stats cards, clicks timeseries chart, and movement tables
-- Top Movers dashboard widget
-- Tracked items management (pages and queries)
-- Full disconnect/reconnect flow
+1. You sign up at [serpdelta.com](https://serpdelta.com) and connect your Google Search Console
+2. SerpDelta syncs your ranking data daily
+3. You generate an API token in SerpDelta settings
+4. You paste the token into the EmDash plugin settings
+5. The plugin fetches your data from the SerpDelta API and renders it in EmDash admin
+
+No OAuth in the plugin. No GSC API calls from EmDash. No data duplication.
 
 ## Install
 
-### 1. Add the package
-
-From the plugin directory (local development):
+### 1. Add the package to your EmDash project
 
 ```bash
-# From your EmDash project root
-npm install ../path/to/serpdelta-plugin
+pnpm add git+ssh://git@github.com:SerpDelta/emdash-plugin.git
 ```
 
-Or link for development:
+Or via npm:
 
 ```bash
-cd serpdelta-plugin
-npm link
-cd ../your-emdash-site
-npm link @serpdelta/emdash-plugin
+npm install git+https://github.com/SerpDelta/emdash-plugin.git
 ```
 
-### 2. Register in astro.config.mjs
+### 2. Register in `astro.config.mjs`
 
 ```typescript
 import { serpdeltaPlugin } from "@serpdelta/emdash-plugin";
@@ -47,140 +38,106 @@ import { serpdeltaPlugin } from "@serpdelta/emdash-plugin";
 export default defineConfig({
   integrations: [
     emdash({
-      plugins: [serpdeltaPlugin()],  // Trusted mode — full resources
+      // ... your existing emdash config
+      plugins: [serpdeltaPlugin()],
     }),
   ],
 });
 ```
 
-### 3. Deploy / restart dev server
+### 3. Build & deploy your EmDash site
 
 ```bash
-npm run dev    # local
-npm run build  # production
+pnpm build
+pnpm run deploy
 ```
 
-### 4. Configure in EmDash admin
+### 4. Get a SerpDelta API token
 
-1. Navigate to **SerpDelta** in the admin sidebar
-2. Enter your Google OAuth Client ID and Client Secret
-3. Click **Save & Connect**
-4. Add the displayed callback URL to your Google Cloud Console as an authorized redirect URI
-5. Click **Connect Google Account** and authorize
-6. Select a property from the dropdown
-7. Click **Sync Now**
+1. Sign in at [serpdelta.com](https://serpdelta.com)
+2. Go to **Settings → API Tokens**
+3. Click **Create Token**
+4. Copy the token (shown once — `sd_xxxxxxxxxx...`)
 
-## Google Cloud Setup
+### 5. Paste it into the plugin settings
 
-Before using the plugin, create OAuth credentials:
+In your EmDash admin:
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com)
-2. Create a project (or use an existing one)
-3. Enable the **Google Search Console API**
-4. Go to **Credentials** > **Create Credentials** > **OAuth client ID**
-5. Application type: **Web application**
-6. Add authorized redirect URI: `https://your-emdash-site.com/_emdash/api/plugins/serpdelta/callback`
-7. Copy the Client ID and Client Secret into the plugin settings
+1. Open **Plugins → SerpDelta → Settings** (gear icon)
+2. Paste the token into the **SerpDelta API Token** field
+3. Save
+
+### 6. Use it
+
+1. Open **SerpDelta** in the admin sidebar
+2. Pick a property from the dropdown
+3. View your dashboard: clicks, impressions, top pages, top keywords, recent alerts
+
+## Features
+
+- **Dashboard** — Clicks, impressions, average position, active alerts
+- **Top Pages** — Best-performing pages with click and position data
+- **Top Keywords** — Best-ranking queries
+- **Recent Alerts** — Significant ranking changes flagged by SerpDelta
+- **Top Movers Widget** — Compact dashboard widget showing recent changes
 
 ## Architecture
 
 ```
 src/
-  index.ts              # Plugin descriptor — ID, storage, capabilities
-  sandbox-entry.ts      # Runtime — routes, admin UI, sync orchestration
+  index.ts                 # Plugin descriptor (id, capabilities, allowedHosts)
+  sandbox-entry.ts         # Runtime: settings, hooks, admin route
   lib/
-    oauth.ts            # Google OAuth 2.0 (auth URL, code exchange, token refresh)
-    gsc-client.ts       # GSC Search Analytics API client (fetch-based, no SDK)
-    movements.ts        # Movement detection + 4-component significance scoring
-    admin-blocks.ts     # Block Kit UI builders (dashboard, charts, tables, forms)
+    api-client.ts          # SerpDelta API client (fetch-based)
+    admin-blocks.ts        # Block Kit JSON builders
 ```
 
-### Routes
+### Plugin Descriptor
 
-| Route | Auth | Purpose |
-|-------|------|---------|
-| `connect` | Yes | Returns Google OAuth authorization URL |
-| `callback` | Public | OAuth redirect handler, exchanges code for tokens |
-| `properties` | Yes | Lists available GSC properties |
-| `sync` | Yes | Pulls GSC data, stores snapshots, computes movements |
-| `tracked` | Yes | CRUD for tracked pages/queries |
-| `admin` | Yes | Block Kit admin page + widget rendering |
+- **ID:** `serpdelta`
+- **Format:** `standard`
+- **Capabilities:** `network:fetch`
+- **Allowed hosts:** `serpdelta.com`
+- **Storage:** None (state in `ctx.kv`)
+- **Settings schema:** Single secret field — `apiToken`
 
-All routes exposed at: `/_emdash/api/plugins/serpdelta/<route>`
+### Runtime
 
-### Storage
+- **Setting storage:** `ctx.kv.get("settings:apiToken")`
+- **Property selection storage:** `ctx.kv.get("propertyId")`
+- **API base:** `https://serpdelta.com/api/v1`
+- **Auth:** `Bearer sd_xxx...`
 
-| Collection | Purpose | Indexes |
-|-----------|---------|---------|
-| `snapshots` | Daily GSC rows (position, clicks, impressions) | siteUrl, date, type |
-| `movements` | Computed position/traffic changes with scores | siteUrl, date, kind |
-| `tracked_items` | User-selected pages/queries to monitor | siteUrl, kind, value |
-| `connections` | Reserved for future multi-property support | siteUrl, createdAt |
+## Constraints
 
-### KV Keys
-
-| Key | Value |
-|-----|-------|
-| `clientId` | Google OAuth Client ID |
-| `clientSecret` | Google OAuth Client Secret |
-| `tokens` | TokenPayload (access, refresh, expiry) |
-| `connected` | Boolean — OAuth complete |
-| `siteUrl` | Selected GSC property URL |
-| `lastSync` | Timestamp of last successful sync |
-| `oauth_state` | CSRF nonce (TTL: 600s) |
-
-### Movement Scoring
-
-Ported from SerpDelta's production AlertScorer. Four components summed:
-
-1. **Statistical significance** (0-55 pts) — z-score of position change vs 21-day historical variance
-2. **Position bracket** (0-30 pts) — larger deltas matter more in higher-ranking positions
-3. **Traffic validation** (0-25 pts) — click change percentage corroborates position shift
-4. **Tracked bonus** (+15 pts) — user explicitly marked this item as important
-
-Alert threshold: score >= 50.
-
-### Constraints
-
-- **Standard plugin format** — no React, no direct DB, no Astro components
-- **Block Kit UI only** — declarative JSON, no browser JS
-- **`ctx.http.fetch()` only** — no direct `fetch()`, allowedHosts enforced
-- **Plugin-scoped storage** — all data isolated to this plugin
-- **Trusted mode recommended** — sandboxed limits (50ms CPU, 10 subrequests) are too tight for GSC sync
+- **Trusted mode only** — installed via `astro.config.mjs`, not via marketplace UI
+- **Standard plugin format** — no React, no direct DB access, Block Kit UI
+- **Network access** — only `serpdelta.com`, declared in `allowedHosts`
+- **No local data storage** — all state pulled from API on each render
 
 ## Development
 
 ```bash
-# Validate plugin structure
+# Validate
 npx emdash plugin validate --dir .
 
-# Bundle for distribution
+# Bundle
 npx emdash plugin bundle --dir .
-
-# Output: dist/serpdelta-0.1.0.tar.gz
+# Output: dist/serpdelta-0.2.0.tar.gz
 ```
-
-## Limitations (v0.1.0)
-
-- Manual sync only (no scheduled/cron sync yet)
-- Single property per install
-- No email alerts or digests
-- No historical import beyond 17 days
-- Trusted mode only (not marketplace-publishable yet)
 
 ## Roadmap
 
-- [ ] `cron:schedule` for automated daily sync
-- [ ] Sandboxed mode with chunked sync (marketplace-publishable)
-- [ ] Per-content GSC metrics via `content:afterSave` hook
-- [ ] Multi-property support
-- [ ] `email:send` for movement digest alerts
+- [ ] Polish: error handling, loading states, refresh button
+- [ ] Per-content GSC stats via `content:afterSave` hook
+- [ ] Scheduled refresh via `cron:schedule` capability
+- [ ] Sandboxed mode evaluation for marketplace publishing
 
 ## Links
 
-- [SerpDelta](https://serpdelta.com) — standalone GSC tracking app
-- [EmDash CMS](https://github.com/emdash-cms/emdash)
-- [Plugin Handoff Doc](../documentation/emdash-plugin-handoff.md) — full research and analysis
+- [SerpDelta](https://serpdelta.com) — the SaaS product this plugin connects to
+- [EmDash CMS](https://github.com/emdash-cms/emdash) — the CMS this plugin runs in
+- [Plugin source](https://github.com/SerpDelta/emdash-plugin)
 
 ## License
 
