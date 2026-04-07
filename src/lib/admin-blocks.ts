@@ -2,20 +2,64 @@
  * Block Kit builders for the admin dashboard.
  */
 
-import type { Movement, Snapshot } from "./movements.js";
+import type { Property, RankingItem, AlertItem } from "./api-client.js";
 
 type Block = Record<string, unknown>;
-type BlockResponse = { blocks: Block[]; toast?: { message: string; type: "success" | "error" | "info" } };
+type BlockResponse = {
+  blocks: Block[];
+  toast?: { message: string; type: "success" | "error" | "info" };
+};
 
-// --- Property Selection ---
+// --- No Token Setup Screen ---
 
-export function propertySelector(properties: Array<{ siteUrl: string; permissionLevel: string }>): BlockResponse {
+export function noTokenScreen(): BlockResponse {
+  return {
+    blocks: [
+      { type: "header", text: "SerpDelta" },
+      {
+        type: "section",
+        text: "Track what matters. Ignore the noise.\n\nConnect SerpDelta to see ranking changes, top movers, and movement data for your pages and queries — right inside EmDash.",
+      },
+      { type: "divider" },
+      {
+        type: "section",
+        text: "**To connect:**\n1. Sign in at serpdelta.com\n2. Go to Settings → API Tokens\n3. Generate a new token\n4. Open the SerpDelta plugin Settings page in EmDash and paste it",
+      },
+      {
+        type: "context",
+        text: "serpdelta.com — track what matters in Google Search Console",
+      },
+    ],
+  };
+}
+
+// --- Property Selector ---
+
+export function propertySelector(properties: Property[]): BlockResponse {
+  if (properties.length === 0) {
+    return {
+      blocks: [
+        { type: "header", text: "SerpDelta" },
+        {
+          type: "section",
+          text: "No properties found. Connect a Google Search Console property at serpdelta.com first, then refresh this page.",
+        },
+        {
+          type: "actions",
+          elements: [
+            { type: "button", label: "Refresh", action_id: "refresh", style: "primary" },
+          ],
+        },
+      ],
+    };
+  }
+
   return {
     blocks: [
       { type: "header", text: "SerpDelta — Select Property" },
       {
         type: "section",
-        text: "Choose which Google Search Console property to track.",
+        text: "Choose which property to display in this EmDash install.",
       },
       {
         type: "form",
@@ -23,11 +67,11 @@ export function propertySelector(properties: Array<{ siteUrl: string; permission
         fields: [
           {
             type: "select",
-            action_id: "site_url",
+            action_id: "property_id",
             label: "Property",
             options: properties.map((p) => ({
-              label: `${p.siteUrl} (${p.permissionLevel})`,
-              value: p.siteUrl,
+              label: `${p.domain}${p.is_pro ? " (Pro)" : ""}`,
+              value: String(p.id),
             })),
           },
         ],
@@ -40,104 +84,120 @@ export function propertySelector(properties: Array<{ siteUrl: string; permission
 // --- Dashboard ---
 
 export function dashboard(
-  siteUrl: string,
-  lastSync: string | null,
-  movements: Movement[],
-  snapshots: Snapshot[],
-  trackedCount: number,
+  property: Property,
+  topPages: RankingItem[],
+  topKeywords: RankingItem[],
+  alerts: AlertItem[],
 ): BlockResponse {
   const blocks: Block[] = [
     { type: "header", text: "SerpDelta" },
   ];
 
   // Stats row
-  const topMovers = movements.filter((m) => m.score >= 50);
-  const improving = movements.filter((m) => m.direction === "up").length;
-  const declining = movements.filter((m) => m.direction === "down").length;
+  const totalClicks = topPages.reduce((s, p) => s + p.clicks, 0);
+  const totalImpressions = topPages.reduce((s, p) => s + p.impressions, 0);
+  const avgPosition = topPages.length > 0
+    ? (topPages.reduce((s, p) => s + p.position, 0) / topPages.length).toFixed(1)
+    : "—";
 
   blocks.push({
     type: "stats",
     stats: [
-      { label: "Property", value: truncateUrl(siteUrl) },
-      { label: "Last Sync", value: lastSync ?? "Never" },
-      { label: "Alerts", value: String(topMovers.length), trend: topMovers.length > 0 ? `${topMovers.length} significant` : undefined },
-      { label: "Tracked", value: String(trackedCount) },
+      { label: "Property", value: property.domain },
+      { label: "Clicks", value: formatNumber(totalClicks) },
+      { label: "Impressions", value: formatNumber(totalImpressions) },
+      { label: "Avg Position", value: avgPosition },
+      { label: "Active Alerts", value: String(alerts.filter((a) => !a.is_read).length) },
     ],
   });
 
-  // Sync button
   blocks.push({
     type: "actions",
     elements: [
-      { type: "button", label: "Sync Now", action_id: "trigger_sync", style: "primary" },
+      { type: "button", label: "Refresh", action_id: "refresh", style: "primary" },
       { type: "button", label: "Change Property", action_id: "change_property" },
-      { type: "button", label: "Disconnect", action_id: "disconnect", style: "danger", confirm: { title: "Disconnect?", text: "This will remove your GSC connection and stored data.", confirm: "Disconnect", deny: "Cancel" } },
+      { type: "button", label: "Disconnect", action_id: "disconnect", style: "danger" },
     ],
   });
 
   blocks.push({ type: "divider" });
 
-  // Position chart (timeseries) — aggregate daily clicks
-  const chartData = buildClicksChart(snapshots, siteUrl);
-  if (chartData.length > 0) {
+  // Recent Alerts
+  if (alerts.length > 0) {
+    blocks.push({ type: "header", text: "Recent Alerts" });
     blocks.push({
-      type: "chart",
-      config: {
-        chart_type: "timeseries",
-        series: [
-          {
-            name: "Clicks",
-            data: chartData,
-            color: "#2563eb",
-          },
-        ],
-        style: "line",
-        gradient: true,
-        height: 250,
-        x_axis_name: "Date",
-        y_axis_name: "Clicks",
-      },
+      type: "table",
+      columns: [
+        { key: "type", label: "Type" },
+        { key: "value", label: "Item" },
+        { key: "delta", label: "Change" },
+        { key: "position", label: "Position" },
+        { key: "score", label: "Score" },
+      ],
+      rows: alerts.slice(0, 15).map((a) => ({
+        type: a.type === "page" ? "Page" : "Query",
+        value: truncate(a.value, 50),
+        delta: `${a.delta > 0 ? "+" : ""}${a.delta}`,
+        position: String(a.position),
+        score: String(a.score),
+      })),
     });
     blocks.push({ type: "divider" });
   }
 
-  // Top movers table
-  if (movements.length > 0) {
-    blocks.push({ type: "header", text: "Top Movers" });
-
-    const moversUp = movements.filter((m) => m.direction === "up").slice(0, 15);
-    const moversDown = movements.filter((m) => m.direction === "down").slice(0, 15);
-
-    if (moversUp.length > 0) {
-      blocks.push({
-        type: "context",
-        text: `${improving} improving, ${declining} declining`,
-      });
-      blocks.push(movementTable("Improving", moversUp));
-    }
-    if (moversDown.length > 0) {
-      blocks.push(movementTable("Declining", moversDown));
-    }
-  } else {
+  // Top Pages
+  if (topPages.length > 0) {
+    blocks.push({ type: "header", text: "Top Pages" });
     blocks.push({
-      type: "context",
-      text: "No movements detected yet. Run a sync to fetch data.",
+      type: "table",
+      columns: [
+        { key: "value", label: "Page" },
+        { key: "clicks", label: "Clicks" },
+        { key: "impressions", label: "Impr." },
+        { key: "position", label: "Position" },
+      ],
+      rows: topPages.slice(0, 10).map((p) => ({
+        value: truncate(stripUrl(p.value), 50),
+        clicks: formatNumber(p.clicks),
+        impressions: formatNumber(p.impressions),
+        position: String(p.position),
+      })),
+    });
+    blocks.push({ type: "divider" });
+  }
+
+  // Top Keywords
+  if (topKeywords.length > 0) {
+    blocks.push({ type: "header", text: "Top Keywords" });
+    blocks.push({
+      type: "table",
+      columns: [
+        { key: "value", label: "Keyword" },
+        { key: "clicks", label: "Clicks" },
+        { key: "impressions", label: "Impr." },
+        { key: "position", label: "Position" },
+      ],
+      rows: topKeywords.slice(0, 10).map((k) => ({
+        value: truncate(k.value, 60),
+        clicks: formatNumber(k.clicks),
+        impressions: formatNumber(k.impressions),
+        position: String(k.position),
+      })),
     });
   }
 
   return { blocks };
 }
 
-// --- Widget ---
+// --- Top Movers Widget ---
 
-export function topMoversWidget(movements: Movement[]): BlockResponse {
-  if (movements.length === 0) {
+export function topMoversWidget(alerts: AlertItem[]): BlockResponse {
+  if (alerts.length === 0) {
     return {
-      blocks: [{ type: "context", text: "No movers yet. Sync your GSC data." }],
+      blocks: [{ type: "context", text: "No recent alerts. Visit serpdelta.com to sync." }],
     };
   }
 
-  const top5 = movements.slice(0, 5);
   return {
     blocks: [
       {
@@ -145,12 +205,10 @@ export function topMoversWidget(movements: Movement[]): BlockResponse {
         columns: [
           { key: "value", label: "Item" },
           { key: "delta", label: "Change" },
-          { key: "direction", label: "", format: "badge" },
         ],
-        rows: top5.map((m) => ({
-          value: truncateValue(m.value, m.kind),
-          delta: `${m.deltaPosition > 0 ? "+" : ""}${m.deltaPosition}`,
-          direction: m.direction === "up" ? "Improved" : "Declined",
+        rows: alerts.slice(0, 5).map((a) => ({
+          value: truncate(a.value, 40),
+          delta: `${a.delta > 0 ? "+" : ""}${a.delta}`,
         })),
       },
     ],
@@ -159,57 +217,21 @@ export function topMoversWidget(movements: Movement[]): BlockResponse {
 
 // --- Helpers ---
 
-function movementTable(title: string, items: Movement[]): Block {
-  return {
-    type: "table",
-    blockId: `movers-${title.toLowerCase()}`,
-    columns: [
-      { key: "type", label: "Type", format: "badge" },
-      { key: "value", label: "Item" },
-      { key: "position", label: "Position" },
-      { key: "delta", label: "Change" },
-      { key: "clicks", label: "Clicks" },
-      { key: "score", label: "Score" },
-    ],
-    rows: items.map((m) => ({
-      type: m.kind === "page" ? "Page" : "Query",
-      value: truncateValue(m.value, m.kind),
-      position: String(m.currentPosition),
-      delta: `${m.deltaPosition > 0 ? "+" : ""}${m.deltaPosition}`,
-      clicks: `${m.currentClicks} (${m.deltaClicks >= 0 ? "+" : ""}${m.deltaClicks})`,
-      score: String(m.score),
-    })),
-  };
+function formatNumber(n: number): string {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return String(n);
 }
 
-function buildClicksChart(
-  snapshots: Snapshot[],
-  siteUrl: string,
-): Array<[number, number]> {
-  // Aggregate clicks by date
-  const byDate = new Map<string, number>();
-  for (const s of snapshots) {
-    if (s.siteUrl !== siteUrl) continue;
-    byDate.set(s.date, (byDate.get(s.date) ?? 0) + s.clicks);
+function stripUrl(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
   }
-
-  return Array.from(byDate.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, clicks]) => [new Date(date).getTime(), clicks]);
 }
 
-function truncateUrl(url: string): string {
-  return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
-}
-
-function truncateValue(value: string, kind: string): string {
-  if (kind === "page") {
-    try {
-      const path = new URL(value).pathname;
-      return path.length > 40 ? "..." + path.slice(-37) : path;
-    } catch {
-      return value.length > 40 ? "..." + value.slice(-37) : value;
-    }
-  }
-  return value.length > 50 ? value.slice(0, 47) + "..." : value;
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max - 3) + "...";
 }

@@ -3,29 +3,14 @@ import type { PluginDescriptor } from "emdash";
 export function serpdeltaPlugin(): PluginDescriptor {
   return {
     id: "serpdelta",
-    version: "0.1.0",
+    version: "0.2.0",
     format: "standard",
     entrypoint: "@serpdelta/emdash-plugin/sandbox",
     capabilities: ["network:fetch"],
     allowedHosts: [
       "serpdelta.com",
-      "www.googleapis.com",
-      "searchconsole.googleapis.com",
     ],
-    storage: {
-      connections: {
-        indexes: ["siteUrl", "createdAt"],
-      },
-      snapshots: {
-        indexes: ["siteUrl", "date", "type"],
-      },
-      movements: {
-        indexes: ["siteUrl", "date", "kind"],
-      },
-      tracked_items: {
-        indexes: ["siteUrl", "kind", "value"],
-      },
-    },
+    storage: {},
     adminPages: [
       { path: "/serpdelta", label: "SerpDelta", icon: "chart" },
     ],
