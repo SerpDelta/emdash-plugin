@@ -126,7 +126,7 @@ export function dashboard(
 
   blocks.push({
     type: "stats",
-    stats: [
+    items: [
       { label: "Property", value: property.domain },
       { label: "Clicks", value: formatNumber(totalClicks) },
       { label: "Impressions", value: formatNumber(totalImpressions) },
