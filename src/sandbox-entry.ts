@@ -1,6 +1,12 @@
 import { definePlugin } from "emdash";
 import type { PluginContext } from "emdash";
 import {
+  blocks as b,
+  elements as e,
+  validateBlocks,
+} from "@emdash-cms/blocks/server";
+import type { BlockResponse } from "@emdash-cms/blocks/server";
+import {
   listProperties,
   listKeywords,
   listPages,
@@ -15,6 +21,48 @@ import {
   topMoversWidget,
 } from "./lib/admin-blocks.js";
 
+/**
+ * Pulls a `typeof fetch`-compatible function out of the plugin context.
+ *
+ * ctx.http is typed as possibly undefined but is guaranteed present because
+ * the plugin declares `capabilities: ["network:fetch"]`. Its fetch method
+ * has a narrower signature (string URL only) than the global fetch, so we
+ * cast through `unknown` — the api-client passes plain string URLs anyway.
+ */
+function pluginFetch(ctx: PluginContext): typeof fetch {
+  if (!ctx.http) {
+    throw new Error(
+      "ctx.http unavailable — plugin must declare 'network:fetch' capability",
+    );
+  }
+  return pluginFetch(ctx) as unknown as typeof fetch;
+}
+
+/**
+ * Runtime guard for BlockResponses. Catches field-name drift between this
+ * plugin and @emdash-cms/blocks before bad JSON reaches the admin React
+ * renderer (where a malformed block crashes the tanstack CatchBoundary
+ * with a useless "Something went wrong!" message). Throwing here routes
+ * through the handler's outer try/catch → errorScreen() → a real message
+ * the user can act on.
+ */
+function assertValidBlocks(
+  response: BlockResponse,
+  ctx: PluginContext,
+  label: string,
+): BlockResponse {
+  const result = validateBlocks(response.blocks);
+  if (!result.valid) {
+    const summary = result.errors
+      .slice(0, 5)
+      .map((err) => `${err.path}: ${err.message}`)
+      .join("; ");
+    ctx.log.error(`[serpdelta] ${label} produced invalid blocks: ${summary}`);
+    throw new Error(`Invalid block shape in ${label} — ${summary}`);
+  }
+  return response;
+}
+
 // --- Types ---
 
 interface AdminInteraction {
@@ -25,11 +73,6 @@ interface AdminInteraction {
   values?: Record<string, unknown>;
   value?: unknown;
 }
-
-type BlockResponse = {
-  blocks: Array<Record<string, unknown>>;
-  toast?: { message: string; type: "success" | "error" | "info" };
-};
 
 // --- Helpers ---
 
@@ -53,7 +96,7 @@ async function loadProperty(
   token: string,
   ctx: PluginContext,
 ): Promise<Property | null> {
-  const props = await listProperties(token, ctx.http.fetch.bind(ctx.http));
+  const props = await listProperties(token, pluginFetch(ctx));
   return props.find((p) => p.id === propertyId) || null;
 }
 
@@ -74,29 +117,30 @@ export default definePlugin({
         routeCtx: { request: Request; input: Record<string, unknown> },
         ctx: PluginContext,
       ): Promise<BlockResponse> => {
-        const interaction = (routeCtx.input || {}) as AdminInteraction;
+        const interaction = (routeCtx.input || {}) as unknown as AdminInteraction;
 
         ctx.log.info(`[serpdelta] interaction: type=${interaction.type} page=${interaction.page ?? "-"} action=${interaction.action_id ?? "-"}`);
 
         try {
+          let response: BlockResponse;
+
           // Widget page_load: page starts with "widget:"
           if (interaction.type === "page_load" && interaction.page?.startsWith("widget:")) {
-            return await renderWidget(ctx);
+            response = await renderWidget(ctx);
+          } else if (interaction.type === "page_load") {
+            response = await renderAdminPage(ctx);
+          } else if (interaction.type === "block_action" || interaction.type === "form_submit") {
+            response = await handleAction(ctx, interaction);
+          } else {
+            response = fallbackScreen(`Unknown interaction type: ${interaction.type}`);
           }
 
-          // Admin page page_load
-          if (interaction.type === "page_load") {
-            return await renderAdminPage(ctx);
-          }
-
-          // Button clicks and form submits
-          if (interaction.type === "block_action" || interaction.type === "form_submit") {
-            return await handleAction(ctx, interaction);
-          }
-
-          return fallbackScreen(`Unknown interaction type: ${interaction.type}`);
+          return assertValidBlocks(response, ctx, `interaction:${interaction.type}`);
         } catch (err) {
           ctx.log.error(`[serpdelta] handler error: ${err instanceof Error ? err.message : String(err)}`);
+          // errorScreen is built from the same typed builders so we trust it;
+          // no point re-validating (and if it's broken, we want the raw error
+          // rather than an infinite validation loop).
           return errorScreen(err);
         }
       },
@@ -118,7 +162,7 @@ async function renderAdminPage(ctx: PluginContext): Promise<BlockResponse> {
   if (!propertyId) {
     try {
       ctx.log.info("[serpdelta] fetching properties list");
-      const props = await listProperties(token, ctx.http.fetch.bind(ctx.http));
+      const props = await listProperties(token, pluginFetch(ctx));
       ctx.log.info(`[serpdelta] got ${props.length} properties`);
       return propertySelector(props);
     } catch (err) {
@@ -134,23 +178,17 @@ async function renderAdminPage(ctx: PluginContext): Promise<BlockResponse> {
       await ctx.kv.delete("propertyId");
       return {
         blocks: [
-          { type: "header", text: "SerpDelta" },
-          {
-            type: "section",
-            text: "Selected property is no longer accessible. Please choose another.",
-          },
-          {
-            type: "actions",
-            elements: [
-              { type: "button", label: "Choose Property", action_id: "change_property", style: "primary" },
-            ],
-          },
+          b.header("SerpDelta"),
+          b.section("Selected property is no longer accessible. Please choose another."),
+          b.actions([
+            e.button("change_property", "Choose Property", { style: "primary" }),
+          ]),
         ],
       };
     }
 
     ctx.log.info(`[serpdelta] fetching data for ${property.domain}`);
-    const fetchFn = ctx.http.fetch.bind(ctx.http);
+    const fetchFn = pluginFetch(ctx);
     const [pagesResult, keywordsResult, alerts] = await Promise.all([
       listPages(propertyId, token, fetchFn, { limit: 10 }),
       listKeywords(propertyId, token, fetchFn, { limit: 10 }),
@@ -176,14 +214,14 @@ async function renderWidget(ctx: PluginContext): Promise<BlockResponse> {
   const propertyId = await getPropertyId(ctx);
 
   if (!token || !propertyId) {
-    return { blocks: [{ type: "context", text: "Connect SerpDelta in plugin settings." }] };
+    return { blocks: [b.context("Connect SerpDelta in plugin settings.")] };
   }
 
   try {
-    const alerts = await listAlerts(propertyId, token, ctx.http.fetch.bind(ctx.http), 5);
+    const alerts = await listAlerts(propertyId, token, pluginFetch(ctx), 5);
     return topMoversWidget(alerts ?? []);
   } catch {
-    return { blocks: [{ type: "context", text: "Could not load alerts." }] };
+    return { blocks: [b.context("Could not load alerts.")] };
   }
 }
 
@@ -207,15 +245,12 @@ function errorScreen(err: unknown): BlockResponse {
 
   return {
     blocks: [
-      { type: "header", text: "SerpDelta" },
-      { type: "section", text: message },
-      {
-        type: "actions",
-        elements: [
-          { type: "button", label: "Retry", action_id: "refresh", style: "primary" },
-          { type: "button", label: "Disconnect", action_id: "disconnect", style: "danger" },
-        ],
-      },
+      b.header("SerpDelta"),
+      b.section(message),
+      b.actions([
+        e.button("refresh", "Retry", { style: "primary" }),
+        e.button("disconnect", "Disconnect", { style: "danger" }),
+      ]),
     ],
   };
 }
@@ -223,14 +258,9 @@ function errorScreen(err: unknown): BlockResponse {
 function fallbackScreen(msg: string): BlockResponse {
   return {
     blocks: [
-      { type: "header", text: "SerpDelta" },
-      { type: "section", text: msg },
-      {
-        type: "actions",
-        elements: [
-          { type: "button", label: "Refresh", action_id: "refresh", style: "primary" },
-        ],
-      },
+      b.header("SerpDelta"),
+      b.section(msg),
+      b.actions([e.button("refresh", "Refresh", { style: "primary" })]),
     ],
   };
 }

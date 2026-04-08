@@ -1,55 +1,47 @@
 /**
  * Block Kit builders for the admin dashboard.
+ *
+ * IMPORTANT: Always use the typed builders exported from
+ * `@emdash-cms/blocks/server` (imported here as `b` and `e`). Hand-rolling
+ * object literals defeats type-checking and lets field-name drift ship to
+ * production — see the 2026-04-08 "stats.stats vs stats.items" incident.
+ *
+ * Every BlockResponse that leaves this file is additionally run through
+ * `validateBlocks()` in sandbox-entry.ts so runtime shape drift fails loud
+ * on the server instead of crashing the admin React renderer.
  */
 
+import {
+  blocks as b,
+  elements as e,
+  type Block,
+  type BlockResponse,
+} from "@emdash-cms/blocks/server";
 import type { Property, RankingItem, AlertItem } from "./api-client.js";
-
-type Block = Record<string, unknown>;
-type BlockResponse = {
-  blocks: Block[];
-  toast?: { message: string; type: "success" | "error" | "info" };
-};
 
 // --- No Token Setup Screen ---
 
 export function noTokenScreen(): BlockResponse {
   return {
     blocks: [
-      { type: "header", text: "SerpDelta" },
-      {
-        type: "section",
-        text: "Track what matters. Ignore the noise.",
-      },
-      {
-        type: "section",
-        text: "Connect SerpDelta to see ranking changes, top movers, and movement data for your pages and queries — right inside EmDash.",
-      },
-      { type: "divider" },
-      { type: "header", text: "Connect" },
-      {
-        type: "section",
-        text: "1. Sign in at serpdelta.com",
-      },
-      {
-        type: "section",
-        text: "2. Go to Settings → API Tokens and generate a new token",
-      },
-      {
-        type: "section",
-        text: "3. Paste the token below and click Save",
-      },
-      {
-        type: "form",
+      b.header("SerpDelta"),
+      b.section("Track what matters. Ignore the noise."),
+      b.section(
+        "Connect SerpDelta to see ranking changes, top movers, and movement data for your pages and queries — right inside EmDash.",
+      ),
+      b.divider(),
+      b.header("Connect"),
+      b.section("1. Sign in at serpdelta.com"),
+      b.section("2. Go to Settings → API Tokens and generate a new token"),
+      b.section("3. Paste the token below and click Save"),
+      b.form({
         fields: [
-          {
-            type: "secret_input",
-            action_id: "api_token",
-            label: "SerpDelta API Token",
+          e.secretInput("api_token", "SerpDelta API Token", {
             placeholder: "sd_...",
-          },
+          }),
         ],
-        submit: { label: "Save Token", action_id: "save_token" },
-      },
+        submit: { label: "Save Token", actionId: "save_token" },
+      }),
     ],
   };
 }
@@ -60,43 +52,32 @@ export function propertySelector(properties: Property[]): BlockResponse {
   if (properties.length === 0) {
     return {
       blocks: [
-        { type: "header", text: "SerpDelta" },
-        {
-          type: "section",
-          text: "No properties found. Connect a Google Search Console property at serpdelta.com first, then refresh this page.",
-        },
-        {
-          type: "actions",
-          elements: [
-            { type: "button", label: "Refresh", action_id: "refresh", style: "primary" },
-          ],
-        },
+        b.header("SerpDelta"),
+        b.section(
+          "No properties found. Connect a Google Search Console property at serpdelta.com first, then refresh this page.",
+        ),
+        b.actions([e.button("refresh", "Refresh", { style: "primary" })]),
       ],
     };
   }
 
   return {
     blocks: [
-      { type: "header", text: "SerpDelta — Select Property" },
-      {
-        type: "section",
-        text: "Choose which property to display in this EmDash install.",
-      },
-      {
-        type: "form",
+      b.header("SerpDelta — Select Property"),
+      b.section("Choose which property to display in this EmDash install."),
+      b.form({
         fields: [
-          {
-            type: "select",
-            action_id: "property_id",
-            label: "Property",
-            options: properties.map((p) => ({
+          e.select(
+            "property_id",
+            "Property",
+            properties.map((p) => ({
               label: `${p.domain}${p.is_pro ? " (Pro)" : ""}`,
               value: String(p.id),
             })),
-          },
+          ),
         ],
-        submit: { label: "Select Property", action_id: "select_property" },
-      },
+        submit: { label: "Select Property", actionId: "select_property" },
+      }),
     ],
   };
 }
@@ -113,110 +94,107 @@ export function dashboard(
   const safeKeywords = Array.isArray(topKeywords) ? topKeywords : [];
   const safeAlerts = Array.isArray(alerts) ? alerts : [];
 
-  const blocks: Block[] = [
-    { type: "header", text: "SerpDelta" },
-  ];
-
-  // Stats row
   const totalClicks = safePages.reduce((s, p) => s + (p.clicks || 0), 0);
   const totalImpressions = safePages.reduce((s, p) => s + (p.impressions || 0), 0);
   const avgPosition = safePages.length > 0
     ? (safePages.reduce((s, p) => s + (p.position || 0), 0) / safePages.length).toFixed(1)
     : "—";
 
-  blocks.push({
-    type: "stats",
-    items: [
+  const blocks: Block[] = [
+    b.header("SerpDelta"),
+    b.stats([
       { label: "Property", value: property.domain },
       { label: "Clicks", value: formatNumber(totalClicks) },
       { label: "Impressions", value: formatNumber(totalImpressions) },
       { label: "Avg Position", value: avgPosition },
       { label: "Alerts", value: String(safeAlerts.filter((a) => !a.is_read).length) },
-    ],
-  });
-
-  blocks.push({
-    type: "actions",
-    elements: [
-      { type: "button", label: "Refresh", action_id: "refresh", style: "primary" },
-      { type: "button", label: "Change Property", action_id: "change_property" },
-      { type: "button", label: "Disconnect", action_id: "disconnect", style: "danger" },
-    ],
-  });
-
-  blocks.push({ type: "divider" });
+    ]),
+    b.actions([
+      e.button("refresh", "Refresh", { style: "primary" }),
+      e.button("change_property", "Change Property"),
+      e.button("disconnect", "Disconnect", { style: "danger" }),
+    ]),
+    b.divider(),
+  ];
 
   // Empty state
   if (safePages.length === 0 && safeKeywords.length === 0 && safeAlerts.length === 0) {
-    blocks.push({
-      type: "section",
-      text: "No ranking data yet. SerpDelta syncs daily from Google Search Console — check back after the next sync.",
-    });
+    blocks.push(
+      b.section(
+        "No ranking data yet. SerpDelta syncs daily from Google Search Console — check back after the next sync.",
+      ),
+    );
     return { blocks };
   }
 
   // Recent Alerts
   if (safeAlerts.length > 0) {
-    blocks.push({ type: "header", text: "Recent Alerts" });
-    blocks.push({
-      type: "table",
-      columns: [
-        { key: "type", label: "Type" },
-        { key: "value", label: "Item" },
-        { key: "delta", label: "Change" },
-        { key: "position", label: "Position" },
-        { key: "score", label: "Score" },
-      ],
-      rows: safeAlerts.slice(0, 15).map((a) => ({
-        type: a.type === "page" ? "Page" : "Query",
-        value: truncate(a.value, 50),
-        delta: `${a.delta > 0 ? "+" : ""}${a.delta}`,
-        position: String(a.position),
-        score: String(a.score),
-      })),
-    });
-    blocks.push({ type: "divider" });
+    blocks.push(b.header("Recent Alerts"));
+    blocks.push(
+      b.table({
+        pageActionId: "alerts_table",
+        columns: [
+          { key: "type", label: "Type" },
+          { key: "value", label: "Item" },
+          { key: "delta", label: "Change" },
+          { key: "position", label: "Position" },
+          { key: "score", label: "Score" },
+        ],
+        rows: safeAlerts.slice(0, 15).map((a) => ({
+          type: a.type === "page" ? "Page" : "Query",
+          value: truncate(a.value, 50),
+          delta: `${a.delta > 0 ? "+" : ""}${a.delta}`,
+          position: String(a.position),
+          score: String(a.score),
+        })),
+      }),
+    );
+    blocks.push(b.divider());
   }
 
   // Top Pages
   if (safePages.length > 0) {
-    blocks.push({ type: "header", text: "Top Pages" });
-    blocks.push({
-      type: "table",
-      columns: [
-        { key: "value", label: "Page" },
-        { key: "clicks", label: "Clicks" },
-        { key: "impressions", label: "Impr." },
-        { key: "position", label: "Position" },
-      ],
-      rows: safePages.slice(0, 10).map((p) => ({
-        value: truncate(stripUrl(p.value), 50),
-        clicks: formatNumber(p.clicks),
-        impressions: formatNumber(p.impressions),
-        position: String(p.position),
-      })),
-    });
-    blocks.push({ type: "divider" });
+    blocks.push(b.header("Top Pages"));
+    blocks.push(
+      b.table({
+        pageActionId: "pages_table",
+        columns: [
+          { key: "value", label: "Page" },
+          { key: "clicks", label: "Clicks" },
+          { key: "impressions", label: "Impr." },
+          { key: "position", label: "Position" },
+        ],
+        rows: safePages.slice(0, 10).map((p) => ({
+          value: truncate(stripUrl(p.value), 50),
+          clicks: formatNumber(p.clicks),
+          impressions: formatNumber(p.impressions),
+          position: String(p.position),
+        })),
+      }),
+    );
+    blocks.push(b.divider());
   }
 
   // Top Keywords
   if (safeKeywords.length > 0) {
-    blocks.push({ type: "header", text: "Top Keywords" });
-    blocks.push({
-      type: "table",
-      columns: [
-        { key: "value", label: "Keyword" },
-        { key: "clicks", label: "Clicks" },
-        { key: "impressions", label: "Impr." },
-        { key: "position", label: "Position" },
-      ],
-      rows: safeKeywords.slice(0, 10).map((k) => ({
-        value: truncate(k.value, 60),
-        clicks: formatNumber(k.clicks),
-        impressions: formatNumber(k.impressions),
-        position: String(k.position),
-      })),
-    });
+    blocks.push(b.header("Top Keywords"));
+    blocks.push(
+      b.table({
+        pageActionId: "keywords_table",
+        columns: [
+          { key: "value", label: "Keyword" },
+          { key: "clicks", label: "Clicks" },
+          { key: "impressions", label: "Impr." },
+          { key: "position", label: "Position" },
+        ],
+        rows: safeKeywords.slice(0, 10).map((k) => ({
+          value: truncate(k.value, 60),
+          clicks: formatNumber(k.clicks),
+          impressions: formatNumber(k.impressions),
+          position: String(k.position),
+        })),
+      }),
+    );
   }
 
   return { blocks };
@@ -227,14 +205,14 @@ export function dashboard(
 export function topMoversWidget(alerts: AlertItem[]): BlockResponse {
   if (alerts.length === 0) {
     return {
-      blocks: [{ type: "context", text: "No recent alerts. Visit serpdelta.com to sync." }],
+      blocks: [b.context("No recent alerts. Visit serpdelta.com to sync.")],
     };
   }
 
   return {
     blocks: [
-      {
-        type: "table",
+      b.table({
+        pageActionId: "movers_table",
         columns: [
           { key: "value", label: "Item" },
           { key: "delta", label: "Change" },
@@ -243,7 +221,7 @@ export function topMoversWidget(alerts: AlertItem[]): BlockResponse {
           value: truncate(a.value, 40),
           delta: `${a.delta > 0 ? "+" : ""}${a.delta}`,
         })),
-      },
+      }),
     ],
   };
 }
