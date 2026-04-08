@@ -84,7 +84,6 @@ export function propertySelector(properties: Property[]): BlockResponse {
       },
       {
         type: "form",
-        block_id: "property_select",
         fields: [
           {
             type: "select",
@@ -110,15 +109,19 @@ export function dashboard(
   topKeywords: RankingItem[],
   alerts: AlertItem[],
 ): BlockResponse {
+  const safePages = Array.isArray(topPages) ? topPages : [];
+  const safeKeywords = Array.isArray(topKeywords) ? topKeywords : [];
+  const safeAlerts = Array.isArray(alerts) ? alerts : [];
+
   const blocks: Block[] = [
     { type: "header", text: "SerpDelta" },
   ];
 
   // Stats row
-  const totalClicks = topPages.reduce((s, p) => s + p.clicks, 0);
-  const totalImpressions = topPages.reduce((s, p) => s + p.impressions, 0);
-  const avgPosition = topPages.length > 0
-    ? (topPages.reduce((s, p) => s + p.position, 0) / topPages.length).toFixed(1)
+  const totalClicks = safePages.reduce((s, p) => s + (p.clicks || 0), 0);
+  const totalImpressions = safePages.reduce((s, p) => s + (p.impressions || 0), 0);
+  const avgPosition = safePages.length > 0
+    ? (safePages.reduce((s, p) => s + (p.position || 0), 0) / safePages.length).toFixed(1)
     : "—";
 
   blocks.push({
@@ -128,7 +131,7 @@ export function dashboard(
       { label: "Clicks", value: formatNumber(totalClicks) },
       { label: "Impressions", value: formatNumber(totalImpressions) },
       { label: "Avg Position", value: avgPosition },
-      { label: "Active Alerts", value: String(alerts.filter((a) => !a.is_read).length) },
+      { label: "Alerts", value: String(safeAlerts.filter((a) => !a.is_read).length) },
     ],
   });
 
@@ -143,8 +146,17 @@ export function dashboard(
 
   blocks.push({ type: "divider" });
 
+  // Empty state
+  if (safePages.length === 0 && safeKeywords.length === 0 && safeAlerts.length === 0) {
+    blocks.push({
+      type: "section",
+      text: "No ranking data yet. SerpDelta syncs daily from Google Search Console — check back after the next sync.",
+    });
+    return { blocks };
+  }
+
   // Recent Alerts
-  if (alerts.length > 0) {
+  if (safeAlerts.length > 0) {
     blocks.push({ type: "header", text: "Recent Alerts" });
     blocks.push({
       type: "table",
@@ -155,7 +167,7 @@ export function dashboard(
         { key: "position", label: "Position" },
         { key: "score", label: "Score" },
       ],
-      rows: alerts.slice(0, 15).map((a) => ({
+      rows: safeAlerts.slice(0, 15).map((a) => ({
         type: a.type === "page" ? "Page" : "Query",
         value: truncate(a.value, 50),
         delta: `${a.delta > 0 ? "+" : ""}${a.delta}`,
@@ -167,7 +179,7 @@ export function dashboard(
   }
 
   // Top Pages
-  if (topPages.length > 0) {
+  if (safePages.length > 0) {
     blocks.push({ type: "header", text: "Top Pages" });
     blocks.push({
       type: "table",
@@ -177,7 +189,7 @@ export function dashboard(
         { key: "impressions", label: "Impr." },
         { key: "position", label: "Position" },
       ],
-      rows: topPages.slice(0, 10).map((p) => ({
+      rows: safePages.slice(0, 10).map((p) => ({
         value: truncate(stripUrl(p.value), 50),
         clicks: formatNumber(p.clicks),
         impressions: formatNumber(p.impressions),
@@ -188,7 +200,7 @@ export function dashboard(
   }
 
   // Top Keywords
-  if (topKeywords.length > 0) {
+  if (safeKeywords.length > 0) {
     blocks.push({ type: "header", text: "Top Keywords" });
     blocks.push({
       type: "table",
@@ -198,7 +210,7 @@ export function dashboard(
         { key: "impressions", label: "Impr." },
         { key: "position", label: "Position" },
       ],
-      rows: topKeywords.slice(0, 10).map((k) => ({
+      rows: safeKeywords.slice(0, 10).map((k) => ({
         value: truncate(k.value, 60),
         clicks: formatNumber(k.clicks),
         impressions: formatNumber(k.impressions),

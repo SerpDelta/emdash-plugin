@@ -15,14 +15,37 @@ import {
   topMoversWidget,
 } from "./lib/admin-blocks.js";
 
+// --- Types ---
+
+interface AdminInteraction {
+  type: string;
+  page?: string;
+  action_id?: string;
+  block_id?: string;
+  values?: Record<string, unknown>;
+  value?: unknown;
+}
+
+type BlockResponse = {
+  blocks: Array<Record<string, unknown>>;
+  toast?: { message: string; type: "success" | "error" | "info" };
+};
+
 // --- Helpers ---
 
 async function getToken(ctx: PluginContext): Promise<string | null> {
-  return ctx.kv.get<string>("settings:apiToken");
+  const val = await ctx.kv.get("settings:apiToken");
+  return typeof val === "string" ? val : null;
 }
 
 async function getPropertyId(ctx: PluginContext): Promise<number | null> {
-  return ctx.kv.get<number>("propertyId");
+  const val = await ctx.kv.get("propertyId");
+  if (typeof val === "number") return val;
+  if (typeof val === "string") {
+    const n = parseInt(val, 10);
+    return isNaN(n) ? null : n;
+  }
+  return null;
 }
 
 async function loadProperty(
@@ -50,30 +73,32 @@ export default definePlugin({
       handler: async (
         routeCtx: { request: Request; input: Record<string, unknown> },
         ctx: PluginContext,
-      ) => {
-        const interaction = routeCtx.input as {
-          type: string;
-          page?: string;
-          action_id?: string;
-          values?: Record<string, string>;
-        };
+      ): Promise<BlockResponse> => {
+        const interaction = (routeCtx.input || {}) as AdminInteraction;
 
-        // --- Widget ---
-        if (interaction.type === "widget_load") {
-          return await renderWidget(ctx);
+        ctx.log.info(`[serpdelta] interaction: type=${interaction.type} page=${interaction.page ?? "-"} action=${interaction.action_id ?? "-"}`);
+
+        try {
+          // Widget page_load: page starts with "widget:"
+          if (interaction.type === "page_load" && interaction.page?.startsWith("widget:")) {
+            return await renderWidget(ctx);
+          }
+
+          // Admin page page_load
+          if (interaction.type === "page_load") {
+            return await renderAdminPage(ctx);
+          }
+
+          // Button clicks and form submits
+          if (interaction.type === "block_action" || interaction.type === "form_submit") {
+            return await handleAction(ctx, interaction);
+          }
+
+          return fallbackScreen(`Unknown interaction type: ${interaction.type}`);
+        } catch (err) {
+          ctx.log.error(`[serpdelta] handler error: ${err instanceof Error ? err.message : String(err)}`);
+          return errorScreen(err);
         }
-
-        // --- Admin Page ---
-        if (interaction.type === "page_load") {
-          return await renderAdminPage(ctx);
-        }
-
-        // --- Actions ---
-        if (interaction.type === "block_action" || interaction.type === "form_submit") {
-          return await handleAction(ctx, interaction);
-        }
-
-        return { blocks: [] };
       },
     },
   },
@@ -81,31 +106,31 @@ export default definePlugin({
 
 // --- Renderers ---
 
-async function renderAdminPage(ctx: PluginContext): Promise<Record<string, unknown>> {
+async function renderAdminPage(ctx: PluginContext): Promise<BlockResponse> {
   const token = await getToken(ctx);
 
-  // Step 1: No token — show setup instructions
   if (!token) {
     return noTokenScreen();
   }
 
-  // Step 2: Have token but no property selected — show picker
   const propertyId = await getPropertyId(ctx);
 
   if (!propertyId) {
     try {
+      ctx.log.info("[serpdelta] fetching properties list");
       const props = await listProperties(token, ctx.http.fetch.bind(ctx.http));
+      ctx.log.info(`[serpdelta] got ${props.length} properties`);
       return propertySelector(props);
     } catch (err) {
+      ctx.log.error(`[serpdelta] listProperties failed: ${err instanceof Error ? err.message : String(err)}`);
       return errorScreen(err);
     }
   }
 
-  // Step 3: Full dashboard
   try {
+    ctx.log.info(`[serpdelta] loading property ${propertyId}`);
     const property = await loadProperty(propertyId, token, ctx);
     if (!property) {
-      // Property no longer accessible — clear and show picker
       await ctx.kv.delete("propertyId");
       return {
         blocks: [
@@ -124,6 +149,7 @@ async function renderAdminPage(ctx: PluginContext): Promise<Record<string, unkno
       };
     }
 
+    ctx.log.info(`[serpdelta] fetching data for ${property.domain}`);
     const fetchFn = ctx.http.fetch.bind(ctx.http);
     const [pagesResult, keywordsResult, alerts] = await Promise.all([
       listPages(propertyId, token, fetchFn, { limit: 10 }),
@@ -131,13 +157,21 @@ async function renderAdminPage(ctx: PluginContext): Promise<Record<string, unkno
       listAlerts(propertyId, token, fetchFn, 15),
     ]);
 
-    return dashboard(property, pagesResult.data, keywordsResult.data, alerts);
+    ctx.log.info(`[serpdelta] rendering dashboard: ${pagesResult.data?.length ?? 0} pages, ${keywordsResult.data?.length ?? 0} keywords, ${alerts?.length ?? 0} alerts`);
+
+    return dashboard(
+      property,
+      pagesResult?.data ?? [],
+      keywordsResult?.data ?? [],
+      alerts ?? [],
+    );
   } catch (err) {
+    ctx.log.error(`[serpdelta] dashboard fetch failed: ${err instanceof Error ? err.message : String(err)}`);
     return errorScreen(err);
   }
 }
 
-async function renderWidget(ctx: PluginContext): Promise<Record<string, unknown>> {
+async function renderWidget(ctx: PluginContext): Promise<BlockResponse> {
   const token = await getToken(ctx);
   const propertyId = await getPropertyId(ctx);
 
@@ -147,39 +181,54 @@ async function renderWidget(ctx: PluginContext): Promise<Record<string, unknown>
 
   try {
     const alerts = await listAlerts(propertyId, token, ctx.http.fetch.bind(ctx.http), 5);
-    return topMoversWidget(alerts);
+    return topMoversWidget(alerts ?? []);
   } catch {
     return { blocks: [{ type: "context", text: "Could not load alerts." }] };
   }
 }
 
-function errorScreen(err: unknown): Record<string, unknown> {
+function errorScreen(err: unknown): BlockResponse {
   let message = "An error occurred";
   if (err instanceof SerpDeltaApiError) {
     if (err.status === 401) {
-      message = "Invalid API token. Generate a new one at serpdelta.com → Settings → API Tokens.";
+      message = "Invalid API token. Generate a new one at serpdelta.com and update plugin settings.";
     } else if (err.status === 403) {
       message = "Account inactive. Contact support.";
     } else if (err.status === 404) {
       message = "No data available. Connect a property at serpdelta.com first.";
     } else {
-      message = `API error: ${err.message}`;
+      message = `API error (${err.status}): ${err.message}`;
     }
   } else if (err instanceof Error) {
     message = err.message;
+  } else if (typeof err === "string") {
+    message = err;
   }
 
   return {
     blocks: [
       { type: "header", text: "SerpDelta" },
-      {
-        type: "section",
-        text: message,
-      },
+      { type: "section", text: message },
       {
         type: "actions",
         elements: [
           { type: "button", label: "Retry", action_id: "refresh", style: "primary" },
+          { type: "button", label: "Disconnect", action_id: "disconnect", style: "danger" },
+        ],
+      },
+    ],
+  };
+}
+
+function fallbackScreen(msg: string): BlockResponse {
+  return {
+    blocks: [
+      { type: "header", text: "SerpDelta" },
+      { type: "section", text: msg },
+      {
+        type: "actions",
+        elements: [
+          { type: "button", label: "Refresh", action_id: "refresh", style: "primary" },
         ],
       },
     ],
@@ -190,44 +239,53 @@ function errorScreen(err: unknown): Record<string, unknown> {
 
 async function handleAction(
   ctx: PluginContext,
-  interaction: {
-    action_id?: string;
-    values?: Record<string, unknown>;
-  },
-): Promise<Record<string, unknown>> {
+  interaction: AdminInteraction,
+): Promise<BlockResponse> {
   const actionId = interaction.action_id;
+  ctx.log.info(`[serpdelta] action: ${actionId}`);
 
   if (actionId === "refresh") {
     return await renderAdminPage(ctx);
   }
 
-  // Save API token
-  if (actionId === "save_token" && interaction.values) {
-    const token = interaction.values.api_token;
-    if (!token || typeof token !== "string" || !token.startsWith("sd_")) {
+  if (actionId === "save_token") {
+    const raw = interaction.values?.api_token;
+    const token = typeof raw === "string" ? raw.trim() : "";
+    if (!token || !token.startsWith("sd_")) {
+      ctx.log.warn(`[serpdelta] invalid token attempt: ${token.slice(0, 4)}...`);
+      const base = await renderAdminPage(ctx);
       return {
-        ...(await renderAdminPage(ctx)),
+        ...base,
         toast: { message: "Invalid token — should start with sd_", type: "error" },
       };
     }
     await ctx.kv.set("settings:apiToken", token);
-    ctx.log.info("API token saved");
+    ctx.log.info("[serpdelta] token saved");
+    const base = await renderAdminPage(ctx);
     return {
-      ...(await renderAdminPage(ctx)),
-      toast: { message: "Token saved — select a property", type: "success" },
+      ...base,
+      toast: { message: "Token saved", type: "success" },
     };
   }
 
-  if (actionId === "select_property" && interaction.values) {
-    const raw = interaction.values.property_id;
-    const id = typeof raw === "string" ? parseInt(raw, 10) : typeof raw === "number" ? raw : NaN;
+  if (actionId === "select_property") {
+    const raw = interaction.values?.property_id;
+    const id =
+      typeof raw === "string" ? parseInt(raw, 10)
+      : typeof raw === "number" ? raw
+      : NaN;
     if (!id || isNaN(id)) {
-      return { blocks: [], toast: { message: "Select a property", type: "error" } };
+      const base = await renderAdminPage(ctx);
+      return {
+        ...base,
+        toast: { message: "Please select a property", type: "error" },
+      };
     }
     await ctx.kv.set("propertyId", id);
-    ctx.log.info(`Property selected: ${id}`);
+    ctx.log.info(`[serpdelta] property selected: ${id}`);
+    const base = await renderAdminPage(ctx);
     return {
-      ...(await renderAdminPage(ctx)),
+      ...base,
       toast: { message: "Property selected", type: "success" },
     };
   }
@@ -240,11 +298,12 @@ async function handleAction(
   if (actionId === "disconnect") {
     await ctx.kv.delete("propertyId");
     await ctx.kv.delete("settings:apiToken");
+    const base = await renderAdminPage(ctx);
     return {
-      ...(await renderAdminPage(ctx)),
-      toast: { message: "Disconnected from SerpDelta", type: "info" },
+      ...base,
+      toast: { message: "Disconnected", type: "info" },
     };
   }
 
-  return { blocks: [] };
+  return fallbackScreen(`Unknown action: ${actionId ?? "(none)"}`);
 }
