@@ -18,16 +18,37 @@ export function noTokenScreen(): BlockResponse {
       { type: "header", text: "SerpDelta" },
       {
         type: "section",
-        text: "Track what matters. Ignore the noise.\n\nConnect SerpDelta to see ranking changes, top movers, and movement data for your pages and queries — right inside EmDash.",
+        text: "Track what matters. Ignore the noise.",
       },
-      { type: "divider" },
       {
         type: "section",
-        text: "**To connect:**\n1. Sign in at serpdelta.com\n2. Go to Settings → API Tokens\n3. Generate a new token\n4. Open the SerpDelta plugin Settings page in EmDash and paste it",
+        text: "Connect SerpDelta to see ranking changes, top movers, and movement data for your pages and queries — right inside EmDash.",
+      },
+      { type: "divider" },
+      { type: "header", text: "Connect" },
+      {
+        type: "section",
+        text: "1. Sign in at serpdelta.com",
       },
       {
-        type: "context",
-        text: "serpdelta.com — track what matters in Google Search Console",
+        type: "section",
+        text: "2. Go to Settings → API Tokens and generate a new token",
+      },
+      {
+        type: "section",
+        text: "3. Paste the token below and click Save",
+      },
+      {
+        type: "form",
+        fields: [
+          {
+            type: "secret_input",
+            action_id: "api_token",
+            label: "SerpDelta API Token",
+            placeholder: "sd_...",
+          },
+        ],
+        submit: { label: "Save Token", action_id: "save_token" },
       },
     ],
   };

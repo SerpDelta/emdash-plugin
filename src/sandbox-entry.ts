@@ -37,16 +37,6 @@ async function loadProperty(
 // --- Plugin Definition ---
 
 export default definePlugin({
-  admin: {
-    settingsSchema: {
-      apiToken: {
-        type: "secret",
-        label: "SerpDelta API Token",
-        description: "Generate a token at serpdelta.com → Settings → API Tokens",
-      },
-    },
-  },
-
   hooks: {
     "plugin:install": {
       handler: async (_event: unknown, ctx: PluginContext) => {
@@ -202,7 +192,7 @@ async function handleAction(
   ctx: PluginContext,
   interaction: {
     action_id?: string;
-    values?: Record<string, string>;
+    values?: Record<string, unknown>;
   },
 ): Promise<Record<string, unknown>> {
   const actionId = interaction.action_id;
@@ -211,9 +201,27 @@ async function handleAction(
     return await renderAdminPage(ctx);
   }
 
+  // Save API token
+  if (actionId === "save_token" && interaction.values) {
+    const token = interaction.values.api_token;
+    if (!token || typeof token !== "string" || !token.startsWith("sd_")) {
+      return {
+        ...(await renderAdminPage(ctx)),
+        toast: { message: "Invalid token — should start with sd_", type: "error" },
+      };
+    }
+    await ctx.kv.set("settings:apiToken", token);
+    ctx.log.info("API token saved");
+    return {
+      ...(await renderAdminPage(ctx)),
+      toast: { message: "Token saved — select a property", type: "success" },
+    };
+  }
+
   if (actionId === "select_property" && interaction.values) {
-    const id = parseInt(interaction.values.property_id, 10);
-    if (!id) {
+    const raw = interaction.values.property_id;
+    const id = typeof raw === "string" ? parseInt(raw, 10) : typeof raw === "number" ? raw : NaN;
+    if (!id || isNaN(id)) {
       return { blocks: [], toast: { message: "Select a property", type: "error" } };
     }
     await ctx.kv.set("propertyId", id);
