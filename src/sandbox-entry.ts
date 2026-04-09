@@ -5,7 +5,7 @@ import {
   elements as e,
   validateBlocks,
 } from "@emdash-cms/blocks/server";
-import type { BlockResponse } from "@emdash-cms/blocks/server";
+import type { Block, BlockResponse } from "@emdash-cms/blocks/server";
 import {
   listProperties,
   listKeywords,
@@ -263,13 +263,21 @@ async function renderWidget(ctx: PluginContext): Promise<BlockResponse> {
 
 function errorScreen(err: unknown): BlockResponse {
   let message = "An error occurred";
+  let referenceId: string | undefined;
+
   if (err instanceof SerpDeltaApiError) {
+    referenceId = err.referenceId;
     if (err.status === 401) {
       message = "Invalid API token. Generate a new one at serpdelta.com and update plugin settings.";
     } else if (err.status === 403) {
       message = "Account inactive. Contact support.";
     } else if (err.status === 404) {
       message = "No data available. Connect a property at serpdelta.com first.";
+    } else if (err.status >= 500 && err.status < 600) {
+      // Upstream server error — the summary extracted from the body (HTML title,
+      // JSON error.message, etc.) is usually more helpful than a generic message.
+      // We keep it short and include the reference ID if we parsed one out.
+      message = `SerpDelta API is temporarily unavailable (${err.status}). ${err.message}. Try again in a minute.`;
     } else {
       message = `API error (${err.status}): ${err.message}`;
     }
@@ -279,16 +287,27 @@ function errorScreen(err: unknown): BlockResponse {
     message = err;
   }
 
-  return {
-    blocks: [
-      b.header("SerpDelta"),
-      b.section(message),
-      b.actions([
-        e.button("refresh", "Retry", { style: "primary" }),
-        e.button("disconnect", "Disconnect", { style: "danger" }),
-      ]),
-    ],
-  };
+  // Annotate as Block[] explicitly — otherwise TypeScript narrows to the
+  // initializer's literal types and rejects the actions block push below.
+  const blocks: Block[] = [
+    b.header("SerpDelta"),
+    b.section(message),
+  ];
+
+  // Add a context line with the reference ID if we have one — lets users
+  // quote a specific error to support without hunting through logs.
+  if (referenceId) {
+    blocks.push(b.section(`Reference: ${referenceId}`));
+  }
+
+  blocks.push(
+    b.actions([
+      e.button("refresh", "Retry", { style: "primary" }),
+      e.button("disconnect", "Disconnect", { style: "danger" }),
+    ]),
+  );
+
+  return { blocks };
 }
 
 function fallbackScreen(msg: string): BlockResponse {

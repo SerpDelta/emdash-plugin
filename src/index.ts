@@ -3,7 +3,7 @@ import type { PluginDescriptor } from "emdash";
 export function serpdeltaPlugin(): PluginDescriptor {
   return {
     id: "serpdelta",
-    version: "0.2.3",
+    version: "0.2.4",
     format: "standard",
     entrypoint: "@serpdelta/emdash-plugin/sandbox",
     capabilities: ["network:fetch"],

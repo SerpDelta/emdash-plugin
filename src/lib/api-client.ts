@@ -58,9 +58,64 @@ export interface RankingDetail {
 }
 
 export class SerpDeltaApiError extends Error {
-  constructor(message: string, public status: number) {
+  constructor(
+    message: string,
+    public status: number,
+    public referenceId?: string,
+  ) {
     super(message);
   }
+}
+
+/**
+ * Summarize an error response body into something an end user can read.
+ *
+ * The SerpDelta API returns three kinds of error bodies:
+ *   1. JSON error shape `{ error: { code, message } }` (happy path — use the message)
+ *   2. Pretty HTML error pages for unexpected 500s (contain an ERR-XXXXXXXX reference)
+ *   3. Plain text for unusual cases (auth failures, proxy errors)
+ *
+ * Before this helper existed, the raw body was dumped into the plugin's
+ * errorScreen, which rendered 5KB of raw HTML inside the admin. Now we
+ * extract the useful bits: a short message + an optional reference ID
+ * the user can quote to support.
+ */
+function summarizeErrorBody(
+  body: string,
+  contentType: string | null,
+): { message: string; referenceId?: string } {
+  // Try JSON first (API's structured error shape)
+  if (contentType?.includes("application/json") || body.trim().startsWith("{")) {
+    try {
+      const parsed = JSON.parse(body);
+      const msg = parsed?.error?.message ?? parsed?.message;
+      if (typeof msg === "string" && msg.length > 0) {
+        return { message: msg.slice(0, 200) };
+      }
+    } catch {
+      // fall through to HTML/text handling
+    }
+  }
+
+  // HTML error page (pretty 500 from the SaaS)
+  if (contentType?.includes("text/html") || /<!doctype html|<html/i.test(body)) {
+    // Extract the error reference if present (format: ERR-XXXXXXXX)
+    const refMatch = body.match(/ERR-[A-F0-9]{8}/i);
+    const titleMatch = body.match(/<title>([^<]+)<\/title>/i);
+    const h1Match = body.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+    const short =
+      h1Match?.[1]?.trim() ??
+      titleMatch?.[1]?.replace(/\s*-\s*SerpDelta\s*$/i, "").trim() ??
+      "upstream error page";
+    return {
+      message: short,
+      ...(refMatch && { referenceId: refMatch[0] }),
+    };
+  }
+
+  // Plain text fallback — truncate aggressively
+  const trimmed = body.trim().slice(0, 200);
+  return { message: trimmed || "(empty response body)" };
 }
 
 async function call<T>(
@@ -80,7 +135,11 @@ async function call<T>(
 
   if (!res.ok) {
     const text = await res.text();
-    throw new SerpDeltaApiError(`API ${res.status}: ${text}`, res.status);
+    const { message, referenceId } = summarizeErrorBody(
+      text,
+      res.headers.get("content-type"),
+    );
+    throw new SerpDeltaApiError(message, res.status, referenceId);
   }
 
   return (await res.json()) as T;
