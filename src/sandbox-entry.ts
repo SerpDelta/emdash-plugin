@@ -35,7 +35,8 @@ function pluginFetch(ctx: PluginContext): typeof fetch {
       "ctx.http unavailable — plugin must declare 'network:fetch' capability",
     );
   }
-  return pluginFetch(ctx) as unknown as typeof fetch;
+  // Bind the method so callers can store and reuse the function reference.
+  return ctx.http.fetch.bind(ctx.http) as unknown as typeof fetch;
 }
 
 /**
