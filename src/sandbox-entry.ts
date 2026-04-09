@@ -92,6 +92,19 @@ async function getPropertyId(ctx: PluginContext): Promise<number | null> {
   return null;
 }
 
+async function getCachedProperty(ctx: PluginContext): Promise<Property | null> {
+  const val = await ctx.kv.get("selectedProperty");
+  if (val && typeof val === "object" && "id" in val && "domain" in val) {
+    return val as Property;
+  }
+  return null;
+}
+
+async function cacheProperty(ctx: PluginContext, property: Property): Promise<void> {
+  await ctx.kv.set("selectedProperty", property);
+  await ctx.kv.set("propertyId", property.id);
+}
+
 async function loadProperty(
   propertyId: number,
   token: string,
@@ -172,11 +185,40 @@ async function renderAdminPage(ctx: PluginContext): Promise<BlockResponse> {
     }
   }
 
+  // Fast path: cached property + parallel data fetch (3 calls, no serial lookup)
   try {
-    ctx.log.info(`[serpdelta] loading property ${propertyId}`);
-    const property = await loadProperty(propertyId, token, ctx);
+    const cached = await getCachedProperty(ctx);
+    const fetchFn = pluginFetch(ctx);
+
+    if (cached && cached.id === propertyId) {
+      ctx.log.info(`[serpdelta] using cached property ${cached.domain}`);
+      const [pagesResult, keywordsResult, alerts] = await Promise.all([
+        listPages(propertyId, token, fetchFn, { limit: 10 }),
+        listKeywords(propertyId, token, fetchFn, { limit: 10 }),
+        listAlerts(propertyId, token, fetchFn, 15),
+      ]);
+      ctx.log.info(`[serpdelta] rendered dashboard: ${pagesResult.data?.length ?? 0}p/${keywordsResult.data?.length ?? 0}k/${alerts?.length ?? 0}a`);
+      return dashboard(
+        cached,
+        pagesResult?.data ?? [],
+        keywordsResult?.data ?? [],
+        alerts ?? [],
+      );
+    }
+
+    // Slow path: no cached property, fetch list + data in parallel, then pick
+    ctx.log.info(`[serpdelta] no cache, parallel fetch for property ${propertyId}`);
+    const [props, pagesResult, keywordsResult, alerts] = await Promise.all([
+      listProperties(token, fetchFn),
+      listPages(propertyId, token, fetchFn, { limit: 10 }),
+      listKeywords(propertyId, token, fetchFn, { limit: 10 }),
+      listAlerts(propertyId, token, fetchFn, 15),
+    ]);
+
+    const property = props.find((p) => p.id === propertyId) ?? null;
     if (!property) {
       await ctx.kv.delete("propertyId");
+      await ctx.kv.delete("selectedProperty");
       return {
         blocks: [
           b.header("SerpDelta"),
@@ -188,15 +230,8 @@ async function renderAdminPage(ctx: PluginContext): Promise<BlockResponse> {
       };
     }
 
-    ctx.log.info(`[serpdelta] fetching data for ${property.domain}`);
-    const fetchFn = pluginFetch(ctx);
-    const [pagesResult, keywordsResult, alerts] = await Promise.all([
-      listPages(propertyId, token, fetchFn, { limit: 10 }),
-      listKeywords(propertyId, token, fetchFn, { limit: 10 }),
-      listAlerts(propertyId, token, fetchFn, 15),
-    ]);
-
-    ctx.log.info(`[serpdelta] rendering dashboard: ${pagesResult.data?.length ?? 0} pages, ${keywordsResult.data?.length ?? 0} keywords, ${alerts?.length ?? 0} alerts`);
+    // Populate cache for next render
+    await cacheProperty(ctx, property);
 
     return dashboard(
       property,
@@ -312,8 +347,28 @@ async function handleAction(
         toast: { message: "Please select a property", type: "error" },
       };
     }
-    await ctx.kv.set("propertyId", id);
-    ctx.log.info(`[serpdelta] property selected: ${id}`);
+
+    // Cache the full Property object so subsequent page loads can skip listProperties
+    try {
+      const token = await getToken(ctx);
+      if (token) {
+        const props = await listProperties(token, pluginFetch(ctx));
+        const property = props.find((p) => p.id === id);
+        if (property) {
+          await cacheProperty(ctx, property);
+          ctx.log.info(`[serpdelta] property selected & cached: ${property.domain}`);
+        } else {
+          await ctx.kv.set("propertyId", id);
+          ctx.log.warn(`[serpdelta] property ${id} selected but not found in list`);
+        }
+      } else {
+        await ctx.kv.set("propertyId", id);
+      }
+    } catch (err) {
+      ctx.log.error(`[serpdelta] property cache failed: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.kv.set("propertyId", id);
+    }
+
     const base = await renderAdminPage(ctx);
     return {
       ...base,
@@ -323,11 +378,13 @@ async function handleAction(
 
   if (actionId === "change_property") {
     await ctx.kv.delete("propertyId");
+    await ctx.kv.delete("selectedProperty");
     return await renderAdminPage(ctx);
   }
 
   if (actionId === "disconnect") {
     await ctx.kv.delete("propertyId");
+    await ctx.kv.delete("selectedProperty");
     await ctx.kv.delete("settings:apiToken");
     const base = await renderAdminPage(ctx);
     return {
